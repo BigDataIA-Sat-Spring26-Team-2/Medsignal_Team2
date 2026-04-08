@@ -21,3 +21,7 @@ Thumbs.db
 
 data/faers/**/*.txt
 chromadb_store/
+
+
+#  FAERS data 
+data/faers/
