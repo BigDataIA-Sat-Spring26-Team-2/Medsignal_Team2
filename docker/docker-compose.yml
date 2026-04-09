@@ -30,7 +30,7 @@ services:
       POSTGRES_USER: medsignal
       POSTGRES_PASSWORD: medsignal
     ports:
-      - "5432:5432"
+      - "5431:5431"
     volumes:
       - pgdata:/var/lib/postgresql/data
 
