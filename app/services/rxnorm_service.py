@@ -24,7 +24,7 @@ load_dotenv()
 PG_URL       = os.getenv("DATABASE_URL")
 RXNORM_BASE  = "https://rxnav.nlm.nih.gov/REST"
 DATA_DIR     = "data/faers"
-SLEEP        = 0.12   # 0.12s between calls = stay under 10 req/s
+SLEEP        = 0.0   # 0.12s between calls = stay under 10 req/s
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -190,7 +190,13 @@ def validate_cache():
     Quick sanity check after building.
     Confirms key drugs are resolved correctly.
     """
-    conn = psycopg2.connect(PG_URL)
+    conn = psycopg2.connect(
+    host=os.getenv("POSTGRES_HOST"),
+    port=os.getenv("POSTGRES_PORT"),
+    dbname=os.getenv("POSTGRES_DB"),
+    user=os.getenv("POSTGRES_USER"),
+    password=os.getenv("POSTGRES_PASSWORD"),  
+    )
     cur  = conn.cursor()
 
     cur.execute("SELECT COUNT(*) FROM rxnorm_cache")
