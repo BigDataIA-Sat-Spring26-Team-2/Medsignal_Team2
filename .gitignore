@@ -25,3 +25,9 @@ chromadb_store/
 
 #  FAERS data 
 data/faers/
+
+# Structlog / Python logs
+*.log
+
+# Kafka local data (if you ever run Kafka outside Docker)
+kafka-logs/
