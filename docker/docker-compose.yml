@@ -1,9 +1,11 @@
 services:
+
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
     container_name: medsignal-zookeeper
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
     ports:
       - "2181:2181"
 
@@ -15,14 +17,44 @@ services:
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_ZOOKEEPER_CONNECTION_TIMEOUT_MS: 60000
+      KAFKA_ZOOKEEPER_SESSION_TIMEOUT_MS: 60000
     ports:
       - "9092:9092"
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  kafka-init:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: medsignal-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command: >
+      "kafka-topics --create --if-not-exists --bootstrap-server kafka:29092 --topic faers_demo --partitions 4 --replication-factor 1 &&
+       kafka-topics --create --if-not-exists --bootstrap-server kafka:29092 --topic faers_drug --partitions 4 --replication-factor 1 &&
+       kafka-topics --create --if-not-exists --bootstrap-server kafka:29092 --topic faers_reac --partitions 4 --replication-factor 1 &&
+       kafka-topics --create --if-not-exists --bootstrap-server kafka:29092 --topic faers_outc --partitions 4 --replication-factor 1 &&
+       echo All topics created successfully"
+    restart: "no"
 
   chromadb:
     image: chromadb/chroma:latest
     container_name: medsignal-chromadb
+    environment:
+      IS_PERSISTENT: "TRUE"
+      ANONYMIZED_TELEMETRY: "FALSE"
     ports:
       - "8001:8000"
     volumes:
