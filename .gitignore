@@ -34,3 +34,6 @@ kafka-logs/
 
 # JDBC drivers — auto-downloaded on first run
 drivers/
+
+poetry.lock
+pyproject.toml
