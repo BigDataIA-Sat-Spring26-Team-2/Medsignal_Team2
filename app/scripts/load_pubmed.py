@@ -45,37 +45,25 @@ if not Entrez.email:
 CHROMADB_MODE = os.getenv("CHROMADB_MODE", "local")
 
 def get_client():
-    """
-    Returns a ChromaDB client.
-    Cloud mode: connects to trychroma.com using tenant + API key.
-    Local mode: persists to disk at CHROMADB_PATH.
-    Controlled entirely by CHROMADB_MODE env variable — zero code changes
-    needed to switch between cloud and local.
-    """
     if CHROMADB_MODE == "cloud":
         import chromadb
-        from chromadb.config import Settings
         print("Connecting to ChromaDB Cloud...")
         try:
             client = chromadb.HttpClient(
-                ssl=True,
                 host="api.trychroma.com",
+                port=8000,
+                ssl=True,
                 tenant=os.getenv("CHROMA_TENANT"),
                 database=os.getenv("CHROMA_DATABASE"),
-                settings=Settings(
-                    chroma_client_auth_provider=(
-                        "chromadb.auth.token.TokenAuthClientProvider"
-                    ),
-                    chroma_client_auth_credentials=os.getenv("CHROMA_API_KEY"),
-                ),
+                headers={
+                    "x-chroma-token": os.getenv("CHROMA_API_KEY")
+                },
             )
-            # Test connection immediately
             client.heartbeat()
             print("Cloud connection OK.\n")
             return client
         except Exception as exc:
             print(f"ERROR: Cloud ChromaDB connection failed: {exc}")
-            print("Fix: check CHROMA_TENANT, CHROMA_DATABASE, CHROMA_API_KEY in .env")
             print("Fallback: set CHROMADB_MODE=local in .env and rerun")
             sys.exit(1)
     else:
@@ -83,7 +71,6 @@ def get_client():
         path = os.getenv("CHROMADB_PATH", "./chromadb_store")
         print(f"Using local ChromaDB at: {path}\n")
         return chromadb.PersistentClient(path=path)
-
 
 # ── Constants ─────────────────────────────────────────────────────────────
 MODEL_NAME   = "all-MiniLM-L6-v2"   # 384-dim, local, no API cost
