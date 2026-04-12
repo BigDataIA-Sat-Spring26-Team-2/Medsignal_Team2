@@ -7,15 +7,14 @@ produces a clean drug_reaction_pairs table in PostgreSQL (Supabase).
 Pipeline steps:
     1.  Load .env and build SparkSession
     2.  Download PostgreSQL JDBC jar if not present
-    3.  Load RxNorm cache from PostgreSQL
-    4.  Read four Kafka topics as static batch dataframes
-    5.  Parse JSON values — all fields as StringType first, cast after
-    6.  DEMO  → caseversion deduplication (window function, keep highest per caseid)
-    7.  DRUG  → PS filter → combination drug split → RxNorm normalize → pair dedup
-    8.  REAC  → deduplication on (primaryid, pt)
-    9.  OUTC  → aggregate death/hosp/lt flags per primaryid
-    10. Four-file join → pair-level dedup → write to PostgreSQL
-    11. Gabapentin validation checkpoint
+    3.  Read four Kafka topics as static batch dataframes
+    4.  Parse JSON values — all fields as StringType first, cast after
+    5.  DEMO  → caseversion deduplication (window function, keep highest per caseid)
+    6.  DRUG  → PS filter → combination drug split → RxNorm normalize → pair dedup
+    7.  REAC  → deduplication on (primaryid, pt)
+    8.  OUTC  → aggregate death/hosp/lt flags per primaryid
+    9.  Four-file join → pair-level dedup → write to PostgreSQL
+    10. Gabapentin validation checkpoint
 
 Usage:
     # Single quarter test (recommended during development)
@@ -75,39 +74,6 @@ SHUFFLE_PARTITIONS = "8"
 # PRR validation checkpoint — must appear in drug_reaction_pairs after Branch 1
 CHECKPOINT_DRUG = "gabapentin"
 CHECKPOINT_PT   = "cardio-respiratory arrest"
-
-
-# ---------------------------------------------------------------------------
-# RxNorm cache loader
-# ---------------------------------------------------------------------------
-
-def load_rxnorm_cache_from_postgres(jdbc_url: str, props: dict) -> dict[str, str]:
-    """
-    Loads the RxNorm cache from the rxnorm_cache PostgreSQL table.
-    Returns a plain Python dict: {prod_ai_upper -> canonical_name}
-
-    prod_ai values in the table are already uppercase — .upper() is
-    applied defensively to handle any inconsistencies.
-
-    canonical_name is lowercase for resolved drugs (e.g. "gabapentin")
-    and uppercased original string for unresolved entries.
-    Null canonical_name rows are skipped — they add nothing to the cache.
-    """
-    from pyspark.sql import SparkSession
-    spark = SparkSession.getActiveSession()
-    df    = spark.read.jdbc(url=jdbc_url, table="rxnorm_cache", properties=props)
-    rows  = df.select("prod_ai", "canonical_name").collect()
-    cache = {
-        r["prod_ai"].upper(): r["canonical_name"]
-        for r in rows
-        if r["canonical_name"] is not None
-    }
-    logger.info(
-        "rxnorm_cache_loaded",
-        source="postgres",
-        entries=len(cache),
-    )
-    return cache
 
 
 # ---------------------------------------------------------------------------
@@ -360,7 +326,7 @@ def parse_outc(spark, raw_df, quarter: str = None):
 
 def dedup_demo(demo_df):
     """
-    Step 6: Caseversion deduplication on DEMO.
+    Step 5: Caseversion deduplication on DEMO.
 
     FAERS cases are resubmitted across quarters as follow-up updates,
     each incrementing caseversion. Keep only the highest caseversion
@@ -382,9 +348,9 @@ def dedup_demo(demo_df):
     )
 
 
-def filter_and_normalize_drug(drug_df, rxnorm_cache: dict, spark):
+def filter_and_normalize_drug(drug_df, jdbc_url: str, props: dict, spark):
     """
-    Step 7: PS filter, combination drug split, and RxNorm normalization.
+    Step 6: PS filter, combination drug split, and RxNorm normalization.
 
     PS filter:
         Keep only role_cod = PS (Primary Suspect).
@@ -394,20 +360,22 @@ def filter_and_normalize_drug(drug_df, rxnorm_cache: dict, spark):
         e.g. "ACETAMINOPHEN\\HYDROCODONE" → "ACETAMINOPHEN"
         Takes the first component only. Applied to both prod_ai and drugname.
 
-    RxNorm normalization via Spark join (no UDF — avoids serialization issues):
-        Converts rxnorm_cache dict to a small Spark dataframe and left joins.
+    RxNorm normalization via Spark join:
+        Reads rxnorm_cache directly as a Spark dataframe and left joins.
+        This carries rxcui through automatically — no Python dict intermediary.
+        Drugs not in the cache get rxcui = NULL (correct per schema).
+
         Normalization hierarchy:
             1. canonical_name from cache if found
             2. prod_ai lowercased if not in cache
             3. drugname lowercased if prod_ai is null
     """
     from pyspark.sql import functions as F
-    from pyspark.sql.types import StringType, StructField, StructType
 
-    # Step 7a — PS filter
+    # Step 6a — PS filter
     drug_df = drug_df.filter(F.upper(F.col("role_cod")) == "PS")
 
-    # Step 7b — Split combination drugs on backslash, take first component
+    # Step 6b — Split combination drugs on backslash, take first component
     # e.g. "ACETAMINOPHEN\HYDROCODONE" → "ACETAMINOPHEN"
     drug_df = (
         drug_df
@@ -427,17 +395,25 @@ def filter_and_normalize_drug(drug_df, rxnorm_cache: dict, spark):
         )
     )
 
-    # Step 7c — RxNorm normalization via Spark join
-    # Convert cache dict to a small Spark dataframe (8,636 rows)
-    # Spark will automatically broadcast this during the join
-    cache_rows = [
-        (k, v) for k, v in rxnorm_cache.items() if v is not None
-    ]
-    cache_schema = StructType([
-        StructField("prod_ai_upper",  StringType(), False),
-        StructField("canonical_name", StringType(), False),
-    ])
-    cache_df = spark.createDataFrame(cache_rows, schema=cache_schema)
+    # Step 6c — Load rxnorm_cache as Spark dataframe
+    # Reading directly from PostgreSQL carries rxcui through the join
+    # automatically. Spark will broadcast this automatically since it's
+    # small (8,636 rows).
+    cache_df = (
+        spark.read.jdbc(url=jdbc_url, table="rxnorm_cache", properties=props)
+        .select(
+            F.upper(F.trim(F.col("prod_ai"))).alias("prod_ai_upper"),
+            F.col("canonical_name"),
+            F.col("rxcui"),
+        )
+        .filter(F.col("canonical_name").isNotNull())
+    )
+
+    logger.info(
+        "rxnorm_cache_loaded",
+        source="postgres",
+        entries=cache_df.count(),
+    )
 
     # Uppercase prod_ai for join key
     drug_df = drug_df.withColumn(
@@ -445,10 +421,11 @@ def filter_and_normalize_drug(drug_df, rxnorm_cache: dict, spark):
         F.upper(F.trim(F.col("prod_ai")))
     )
 
-    # Left join — unmatched drugs get canonical_name = null
+    # Left join — unmatched drugs get canonical_name = null, rxcui = null
     drug_df = drug_df.join(cache_df, on="prod_ai_upper", how="left")
 
     # Apply normalization hierarchy using native Spark functions
+    # rxcui stays in the dataframe — null for unresolved drugs
     drug_df = drug_df.withColumn(
         "drug_key",
         F.when(
@@ -472,7 +449,7 @@ def filter_and_normalize_drug(drug_df, rxnorm_cache: dict, spark):
 
 def dedup_reac(reac_df):
     """
-    Step 8: REAC deduplication.
+    Step 7: REAC deduplication.
 
     Removes duplicate reaction terms per case.
     One row per (primaryid, pt) — same reaction reported twice counts once.
@@ -489,7 +466,7 @@ def dedup_reac(reac_df):
 
 def aggregate_outc(outc_df):
     """
-    Step 9: OUTC aggregation.
+    Step 8: OUTC aggregation.
 
     OUTC has one row per outcome code per case. A case can have multiple
     outcomes (e.g. both DE and HO). Collapse to three binary flags per
@@ -521,7 +498,7 @@ def aggregate_outc(outc_df):
 
 def build_drug_reaction_pairs(demo_df, drug_df, reac_df, outc_df):
     """
-    Step 10: Four-file join and pair-level deduplication.
+    Step 9: Four-file join and pair-level deduplication.
 
     source_quarter exists in all four dataframes (injected by faers_prep.py).
     caseid exists in both DRUG and DEMO.
@@ -538,6 +515,7 @@ def build_drug_reaction_pairs(demo_df, drug_df, reac_df, outc_df):
 
     Final dedup on (primaryid, drug_key, pt) gives one clean row per
     patient-drug-reaction triple — the drug_reaction_pairs table.
+    rxcui is carried through from the RxNorm normalization join.
     """
     from pyspark.sql import functions as F
 
@@ -568,10 +546,12 @@ def build_drug_reaction_pairs(demo_df, drug_df, reac_df, outc_df):
     pairs = joined.dropDuplicates(["primaryid", "drug_key", "pt"])
 
     # Final column selection matching drug_reaction_pairs PostgreSQL schema
+    # rxcui included — null for drugs not resolved by RxNorm cache
     return pairs.select(
         "primaryid",
         "caseid",
         "drug_key",
+        "rxcui",
         "pt",
         # Cast fda_dt from "YYYYMMDD" string to DATE for PostgreSQL
         F.to_date(F.col("fda_dt"), "yyyyMMdd").alias("fda_dt"),
@@ -664,17 +644,25 @@ def validate_row_counts(pairs_df, quarter: str = None) -> bool:
 # PRR validation checkpoint
 # ---------------------------------------------------------------------------
 
-def run_validation_checkpoint(spark, jdbc_url: str, props: dict) -> bool:
+def run_validation_checkpoint(
+    spark,
+    jdbc_url: str,
+    props: dict,
+    table: str = "drug_reaction_pairs",
+) -> bool:
     """
-    Confirms that gabapentin + cardiorespiratory arrest exists in
+    Confirms that gabapentin + cardio-respiratory arrest exists in
     drug_reaction_pairs after Branch 1 completes.
 
     Gabapentin is one of the most reported drugs in 2023 FAERS.
-    Cardiorespiratory arrest is an unambiguous MedDRA term with no variants.
+    Cardio-respiratory arrest is an unambiguous MedDRA term with no variants.
 
     If this pair doesn't exist, the join, PS filter, or normalization
     has a fundamental bug. This is the pipeline correctness gate —
     Branch 2 must not run until this checkpoint passes.
+
+    Args:
+        table: table to query — pass your test table name during development.
     """
     from pyspark.sql import functions as F
 
@@ -682,11 +670,12 @@ def run_validation_checkpoint(spark, jdbc_url: str, props: dict) -> bool:
         "validation_checkpoint_start",
         drug=CHECKPOINT_DRUG,
         reaction=CHECKPOINT_PT,
+        table=table,
     )
 
     df = spark.read.jdbc(
         url=jdbc_url,
-        table="drug_reaction_pairs",
+        table=table,
         properties=props,
     )
 
@@ -743,7 +732,7 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Process a single quarter only (e.g. 2023Q1). "
             "Filters by source_quarter after JSON parsing. "
-            "Omit to process all quarters in Kafka."
+            "Omit when Kafka contains a single quarter already."
         ),
     )
     parser.add_argument(
@@ -754,6 +743,16 @@ def parse_args() -> argparse.Namespace:
             "Limit rows read per Kafka topic (e.g. --limit 500000). "
             "Use during development to speed up test runs. "
             "Skips row count validation when set."
+        ),
+    )
+    parser.add_argument(
+        "--table",
+        type=str,
+        default="drug_reaction_pairs",
+        help=(
+            "Target PostgreSQL table to write to "
+            "(default: drug_reaction_pairs). "
+            "Use --table drug_reaction_pairs_duplicates for testing."
         ),
     )
     return parser.parse_args()
@@ -809,6 +808,7 @@ def main():
         postgres_db=postgres_db,
         quarter=args.quarter or "all",
         limit=args.limit or "none",
+        table=args.table,
     )
 
     # ------------------------------------------------------------------
@@ -828,12 +828,7 @@ def main():
     )
 
     # ------------------------------------------------------------------
-    # 4. Load RxNorm cache from PostgreSQL
-    # ------------------------------------------------------------------
-    rxnorm_cache = load_rxnorm_cache_from_postgres(jdbc_url, jdbc_props)
-
-    # ------------------------------------------------------------------
-    # 5. Read Kafka topics as static batch dataframes
+    # 4. Read Kafka topics as static batch dataframes
     # ------------------------------------------------------------------
     logger.info("reading_kafka_topics", bootstrap_servers=kafka_servers)
 
@@ -843,7 +838,7 @@ def main():
     raw_outc = read_kafka_topic(spark, kafka_servers, "faers_outc", limit=args.limit)
 
     # ------------------------------------------------------------------
-    # 6. Parse JSON — all fields StringType first, cast after
+    # 5. Parse JSON — all fields StringType first, cast after
     #    Quarter filter applied here via source_quarter column
     # ------------------------------------------------------------------
     logger.info("parsing_json", quarter=args.quarter or "all")
@@ -854,31 +849,33 @@ def main():
     outc_df = parse_outc(spark, raw_outc, quarter=args.quarter)
 
     # ------------------------------------------------------------------
-    # 7. DEMO — caseversion deduplication
+    # 6. DEMO — caseversion deduplication
     # ------------------------------------------------------------------
     logger.info("deduplicating_demo")
     demo_deduped = dedup_demo(demo_df)
 
     # ------------------------------------------------------------------
-    # 8. DRUG — PS filter + combination split + RxNorm normalize
+    # 7. DRUG — PS filter + combination split + RxNorm normalize
+    #    Reads rxnorm_cache from PostgreSQL directly as Spark dataframe
+    #    so rxcui is carried through the join automatically
     # ------------------------------------------------------------------
     logger.info("filtering_and_normalizing_drug")
-    drug_normalized = filter_and_normalize_drug(drug_df, rxnorm_cache, spark)
+    drug_normalized = filter_and_normalize_drug(drug_df, jdbc_url, jdbc_props, spark)
 
     # ------------------------------------------------------------------
-    # 9. REAC — deduplication
+    # 8. REAC — deduplication
     # ------------------------------------------------------------------
     logger.info("deduplicating_reac")
     reac_deduped = dedup_reac(reac_df)
 
     # ------------------------------------------------------------------
-    # 10. OUTC — aggregate flags
+    # 9. OUTC — aggregate flags
     # ------------------------------------------------------------------
     logger.info("aggregating_outc_flags")
     outc_aggregated = aggregate_outc(outc_df)
 
     # ------------------------------------------------------------------
-    # 11. Four-file join → pair-level dedup
+    # 10. Four-file join → pair-level dedup
     # ------------------------------------------------------------------
     logger.info("joining_four_files")
     pairs_df = build_drug_reaction_pairs(
@@ -894,7 +891,7 @@ def main():
     pairs_df.cache()
 
     # ------------------------------------------------------------------
-    # 12. Row count validation
+    # 11. Row count validation
     # ------------------------------------------------------------------
     if args.limit:
         logger.info(
@@ -906,14 +903,14 @@ def main():
         validate_row_counts(pairs_df, quarter=args.quarter)
 
     # ------------------------------------------------------------------
-    # 13. Write to PostgreSQL
+    # 12. Write to PostgreSQL
     # ------------------------------------------------------------------
-    write_to_postgres(pairs_df, "drug_reaction_pairs_duplicates", jdbc_url, jdbc_props)
+    write_to_postgres(pairs_df, args.table, jdbc_url, jdbc_props)
 
     # ------------------------------------------------------------------
-    # 14. PRR validation checkpoint
+    # 13. PRR validation checkpoint
     # ------------------------------------------------------------------
-    passed = run_validation_checkpoint(spark, jdbc_url, jdbc_props)
+    passed = run_validation_checkpoint(spark, jdbc_url, jdbc_props, table=args.table)
 
     if not passed:
         logger.error(
@@ -927,6 +924,7 @@ def main():
     logger.info(
         "branch1_complete",
         quarter=args.quarter or "all",
+        table=args.table,
         next_step="Run spark_branch2.py to compute PRR signals",
     )
 
