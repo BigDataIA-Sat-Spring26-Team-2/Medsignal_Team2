@@ -47,29 +47,32 @@ client     = get_client()
 collection = get_collection(client)
 
 # ── Constants ─────────────────────────────────────────────────────────────
-MODEL_NAME   = "all-MiniLM-L6-v2"   # 384-dim, local, no API cost
-                                      # MUST match model used in Agent 2
-THRESHOLD    = 0.60                   # cosine similarity threshold
-                                      # calibrated from POC (proposal p33)
-MAX_PER_DRUG = 200                    # PMIDs per drug (NCBI max for free)
-BATCH_SIZE   = 20                     # EFetch batch size (NCBI recommended)
-SLEEP_S      = 0.12                   # 8 req/s — safely under 10 req/s limit
+MODEL_NAME    = "all-MiniLM-L6-v2"  # 384-dim, local, no API cost
+                                     # MUST match model used in Agent 2
+THRESHOLD     = 0.60                 # cosine similarity threshold
+                                     # calibrated from POC (proposal p33)
+MAX_PER_DRUG  = 200                  # PMIDs per drug (NCBI max for free)
+BATCH_SIZE    = 20                   # EFetch batch size (NCBI recommended)
+SLEEP_S       = 0.12                 # 8 req/s — safely under 10 req/s limit
+SKIP_THRESHOLD = int(MAX_PER_DRUG * 0.75)  # skip drug if already has this
+                                            # many abstracts (scales with
+                                            # MAX_PER_DRUG automatically)
 
 # ── 10 Golden signal drugs ────────────────────────────────────────────────
 # Source: proposal p30-31, Table: Golden Signal Validation Set
 # Each has a documented FDA safety communication in 2023-2024
 # These are the ONLY drugs the agent pipeline evaluates against
 GOLDEN_DRUGS = [
-    "dupilumab",      # Dupixent  — FDA Label Update Jan 2024
-    "gabapentin",     # Neurontin — FDA Safety Comm  Dec 2023
-    "pregabalin",     # Lyrica    — FDA Safety Comm  Dec 2023
-    "levetiracetam",  # Keppra    — FDA Safety Comm  Nov 2023
-    "tirzepatide",    # Mounjaro  — FDA Safety Comm  Sep 2023
-    "semaglutide",    # Ozempic   — FDA Safety Comm  Sep 2023
-    "empagliflozin",  # Jardiance — FDA Safety Comm  Aug 2023
-    "bupropion",      # Wellbutrin— FDA Safety Comm  May 2023
-    "dapagliflozin",  # Farxiga   — FDA Label Update May 2023
-    "metformin",      # Glucophage— FDA Safety Comm  Apr 2023
+    "dupilumab",      # Dupixent   — FDA Label Update Jan 2024
+    "gabapentin",     # Neurontin  — FDA Safety Comm  Dec 2023
+    "pregabalin",     # Lyrica     — FDA Safety Comm  Dec 2023
+    "levetiracetam",  # Keppra     — FDA Safety Comm  Nov 2023
+    "tirzepatide",    # Mounjaro   — FDA Safety Comm  Sep 2023
+    "semaglutide",    # Ozempic    — FDA Safety Comm  Sep 2023
+    "empagliflozin",  # Jardiance  — FDA Safety Comm  Aug 2023
+    "bupropion",      # Wellbutrin — FDA Safety Comm  May 2023
+    "dapagliflozin",  # Farxiga    — FDA Label Update May 2023
+    "metformin",      # Glucophage — FDA Safety Comm  Apr 2023
 ]
 
 # ── Embedding model ───────────────────────────────────────────────────────
@@ -154,9 +157,11 @@ def load_drug(drug_name: str) -> int:
     Full pipeline for one drug:
     1. Check what is already in ChromaDB — skip if sufficiently loaded
     2. Search PubMed for PMIDs
-    3. Fetch abstracts in batches of 20
-    4. Embed each abstract locally with all-MiniLM-L6-v2
-    5. Store vector + metadata in ChromaDB
+    3. Strip already-loaded PMIDs before batching — avoids unnecessary
+       NCBI network calls on warm restarts
+    4. Fetch only new PMIDs in batches of 20
+    5. Embed each abstract locally with all-MiniLM-L6-v2
+    6. Store vector + metadata in ChromaDB
 
     uid format is drug_name_pmid — unique per drug-paper combination.
     Same PMID can appear for multiple drugs (intentional — same paper
@@ -167,17 +172,29 @@ def load_drug(drug_name: str) -> int:
     existing   = collection.get(where={"drug_name": drug_name})
     loaded_ids = set(existing["ids"])
 
-    if len(loaded_ids) >= 150:
+    # SKIP_THRESHOLD scales with MAX_PER_DRUG — not a magic number
+    if len(loaded_ids) >= SKIP_THRESHOLD:
         print(f"  {drug_name}: already loaded ({len(loaded_ids)} abstracts), skipping")
         return 0
 
     pmids = list(dict.fromkeys(esearch(drug_name)))
     print(f"  {drug_name}: {len(pmids)} PMIDs found")
 
+    # Strip already-loaded PMIDs before batching so warm restarts
+    # don't make unnecessary NCBI network calls.
+    # uid format is drug_name_pmid — split on first _ to extract PMID.
+    loaded_pmids   = {uid.split("_", 1)[1] for uid in loaded_ids}
+    pmids_to_fetch = [p for p in pmids if p not in loaded_pmids]
+
+    print(
+        f"  {drug_name}: {len(pmids_to_fetch)} to fetch "
+        f"({len(pmids) - len(pmids_to_fetch)} already loaded)"
+    )
+
     newly_loaded = 0
 
-    for i in range(0, len(pmids), BATCH_SIZE):
-        batch = pmids[i : i + BATCH_SIZE]
+    for i in range(0, len(pmids_to_fetch), BATCH_SIZE):
+        batch = pmids_to_fetch[i : i + BATCH_SIZE]
 
         try:
             records = efetch_batch(batch)
@@ -245,6 +262,9 @@ def validate():
     passed    = 0
 
     for i, (doc, dist) in enumerate(zip(docs, distances)):
+        # Cosine distance → similarity = 1 - distance.
+        # Only valid because get_collection() enforces hnsw:space=cosine.
+        # If this were L2, scores would be meaningless.
         similarity = 1 - dist
         status     = "PASS" if similarity >= THRESHOLD else "FAIL"
         if similarity >= THRESHOLD:
@@ -263,10 +283,11 @@ def main():
     print("=" * 60)
     print("MedSignal — PubMed → ChromaDB Loader")
     print("=" * 60)
-    print(f"Mode    : {os.getenv('CHROMADB_MODE', 'local')}")
-    print(f"Model   : {MODEL_NAME}")
-    print(f"Drugs   : {len(GOLDEN_DRUGS)}")
-    print(f"Max/drug: {MAX_PER_DRUG} PMIDs")
+    print(f"Mode          : {os.getenv('CHROMADB_MODE', 'local')}")
+    print(f"Model         : {MODEL_NAME}")
+    print(f"Drugs         : {len(GOLDEN_DRUGS)}")
+    print(f"Max/drug      : {MAX_PER_DRUG} PMIDs")
+    print(f"Skip threshold: {SKIP_THRESHOLD} abstracts")
     print()
 
     total = 0
