@@ -32,6 +32,9 @@ data/faers/
 # Kafka local data (if you ever run Kafka outside Docker)
 kafka-logs/
 
+# JDBC drivers — auto-downloaded on first run
+drivers/
+
 poetry.lock
 pyproject.toml
 
