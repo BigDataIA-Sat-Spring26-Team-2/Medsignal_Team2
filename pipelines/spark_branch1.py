@@ -113,9 +113,13 @@ def build_spark(jdbc_jar_path: str):
       - Kafka batch reading (via spark-sql-kafka package)
       - PostgreSQL writing (via JDBC jar)
     """
-    # Windows requires HADOOP_HOME to be set for Spark to run locally
-    os.environ["HADOOP_HOME"] = "C:\\hadoop"
-    os.environ["PATH"]        = os.environ["PATH"] + ";C:\\hadoop\\bin"
+    hadoop_home = os.getenv("HADOOP_HOME")
+    if hadoop_home:
+        os.environ["HADOOP_HOME"] = hadoop_home
+        os.environ["PATH"]        = os.environ["PATH"] + f";{hadoop_home}\\bin"
+    else:
+        logger.warning("hadoop_home_not_set", hint="Set HADOOP_HOME in .env for Windows")
+
 
     from pyspark.sql import SparkSession
 
@@ -348,7 +352,7 @@ def dedup_demo(demo_df):
     )
 
 
-def filter_and_normalize_drug(drug_df, jdbc_url: str, props: dict, spark):
+def filter_and_normalize_drug(drug_df, pg_conn_str: str, spark):
     """
     Step 6: PS filter, combination drug split, and RxNorm normalization.
 
@@ -395,24 +399,24 @@ def filter_and_normalize_drug(drug_df, jdbc_url: str, props: dict, spark):
         )
     )
 
-    # Step 6c — Load rxnorm_cache as Spark dataframe
-    # Reading directly from PostgreSQL carries rxcui through the join
-    # automatically. Spark will broadcast this automatically since it's
-    # small (8,636 rows).
-    cache_df = (
-        spark.read.jdbc(url=jdbc_url, table="rxnorm_cache", properties=props)
-        .select(
-            F.upper(F.trim(F.col("prod_ai"))).alias("prod_ai_upper"),
-            F.col("canonical_name"),
-            F.col("rxcui"),
-        )
-        .filter(F.col("canonical_name").isNotNull())
+    # Step 6c — Load rxnorm_cache via psycopg2 (reliable small table read)
+    import psycopg2
+    import pandas as pd
+
+    conn = psycopg2.connect(pg_conn_str)
+    cache_pd = pd.read_sql(
+        "SELECT UPPER(TRIM(prod_ai)) as prod_ai_upper, canonical_name, rxcui "
+        "FROM rxnorm_cache WHERE canonical_name IS NOT NULL",
+        conn
     )
+    conn.close()
+
+    cache_df = spark.createDataFrame(cache_pd)
 
     logger.info(
         "rxnorm_cache_loaded",
         source="postgres",
-        entries=cache_df.count(),
+        entries=len(cache_pd),
     )
 
     # Uppercase prod_ai for join key
@@ -566,26 +570,36 @@ def build_drug_reaction_pairs(demo_df, drug_df, reac_df, outc_df):
 # PostgreSQL writer
 # ---------------------------------------------------------------------------
 
-def write_to_postgres(df, table: str, jdbc_url: str, props: dict) -> int:
+def write_to_postgres(df, table: str, pg_conn_str: str) -> int:
     """
-    Writes a dataframe to PostgreSQL (Supabase) via JDBC.
-
-    Uses append mode — safe to re-run because drug_reaction_pairs has a
-    composite PK (primaryid, drug_key, pt) that prevents duplicates.
-    If you need to re-run from scratch, TRUNCATE the table in Supabase first.
-
-    Returns the row count written.
+    Writes a dataframe to PostgreSQL via psycopg2 + SQLAlchemy.
+    More reliable than JDBC on Windows — no JVM DNS dependency.
+    Uses to_sql with chunksize to avoid memory issues on large dataframes.
     """
+    import psycopg2
+    from sqlalchemy import create_engine
+
     logger.info("writing_to_postgres", table=table)
 
-    df.write.jdbc(
-        url=jdbc_url,
-        table=table,
-        mode="append",
-        properties=props,
+    # Convert Spark dataframe to pandas
+    pandas_df = df.toPandas()
+
+    # SQLAlchemy engine using psycopg2 as the underlying driver
+    engine = create_engine(
+        "postgresql+psycopg2://",
+        creator=lambda: psycopg2.connect(pg_conn_str),
     )
 
-    count = df.count()
+    pandas_df.to_sql(
+        name=table,
+        con=engine,
+        if_exists="append",
+        index=False,
+        chunksize=10000,   # write in batches to avoid memory pressure
+        method="multi",    # use multi-row INSERT for speed
+    )
+
+    count = len(pandas_df)
     logger.info("write_complete", table=table, rows=count)
     return count
 
@@ -645,26 +659,18 @@ def validate_row_counts(pairs_df, quarter: str = None) -> bool:
 # ---------------------------------------------------------------------------
 
 def run_validation_checkpoint(
-    spark,
-    jdbc_url: str,
-    props: dict,
+    pg_conn_str: str,
     table: str = "drug_reaction_pairs",
 ) -> bool:
     """
     Confirms that gabapentin + cardio-respiratory arrest exists in
     drug_reaction_pairs after Branch 1 completes.
 
-    Gabapentin is one of the most reported drugs in 2023 FAERS.
-    Cardio-respiratory arrest is an unambiguous MedDRA term with no variants.
-
-    If this pair doesn't exist, the join, PS filter, or normalization
-    has a fundamental bug. This is the pipeline correctness gate —
-    Branch 2 must not run until this checkpoint passes.
-
-    Args:
-        table: table to query — pass your test table name during development.
+    Uses a direct psycopg2 COUNT(*) query — far more efficient than
+    loading the entire table into Spark just to count matching rows.
+    Runs in milliseconds on the indexed table.
     """
-    from pyspark.sql import functions as F
+    import psycopg2
 
     logger.info(
         "validation_checkpoint_start",
@@ -673,18 +679,15 @@ def run_validation_checkpoint(
         table=table,
     )
 
-    df = spark.read.jdbc(
-        url=jdbc_url,
-        table=table,
-        properties=props,
+    conn = psycopg2.connect(pg_conn_str)
+    cur  = conn.cursor()
+    cur.execute(
+        f"SELECT COUNT(*) FROM {table} WHERE drug_key = %s AND pt = %s",
+        (CHECKPOINT_DRUG, CHECKPOINT_PT),
     )
-
-    count = (
-        df
-        .filter(F.col("drug_key") == CHECKPOINT_DRUG)
-        .filter(F.col("pt") == CHECKPOINT_PT)
-        .count()
-    )
+    count = cur.fetchone()[0]
+    cur.close()
+    conn.close()
 
     if count > 0:
         logger.info(
@@ -800,6 +803,14 @@ def main():
         "password": postgres_pass,
         "driver":   "org.postgresql.Driver",
     }
+    pg_conn_str = (
+        f"host={postgres_host} "
+        f"port={postgres_port} "
+        f"dbname={postgres_db} "
+        f"user={postgres_user} "
+        f"password={postgres_pass} "
+        f"sslmode=require"
+    )
 
     logger.info(
         "branch1_start",
@@ -860,7 +871,7 @@ def main():
     #    so rxcui is carried through the join automatically
     # ------------------------------------------------------------------
     logger.info("filtering_and_normalizing_drug")
-    drug_normalized = filter_and_normalize_drug(drug_df, jdbc_url, jdbc_props, spark)
+    drug_normalized = filter_and_normalize_drug(drug_df, pg_conn_str, spark)
 
     # ------------------------------------------------------------------
     # 8. REAC — deduplication
@@ -905,12 +916,12 @@ def main():
     # ------------------------------------------------------------------
     # 12. Write to PostgreSQL
     # ------------------------------------------------------------------
-    write_to_postgres(pairs_df, args.table, jdbc_url, jdbc_props)
+    write_to_postgres(pairs_df, args.table, pg_conn_str)
 
     # ------------------------------------------------------------------
     # 13. PRR validation checkpoint
     # ------------------------------------------------------------------
-    passed = run_validation_checkpoint(spark, jdbc_url, jdbc_props, table=args.table)
+    passed = run_validation_checkpoint(pg_conn_str, table=args.table)
 
     if not passed:
         logger.error(
