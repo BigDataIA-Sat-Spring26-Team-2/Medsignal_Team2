@@ -1,30 +1,24 @@
 """
 branch2_prr.py — Spark Branch 2: PRR Computation
-Owner: Prachi
-Run:   python pipelines/branch2_prr.py
+
 """
 
 import os
+import math
 import logging
 import psycopg2
+import pandas as pd
+import sqlalchemy
+from typing import Optional
 from dotenv import load_dotenv
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, count, lit, when, countDistinct
-from pyspark.sql.functions import max as spark_max, sum as spark_sum
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
-# ── Config ────────────────────────────────────────────────────────────────────
-PG_URL = f"jdbc:postgresql://{os.getenv('POSTGRES_HOST')}:{os.getenv('POSTGRES_PORT')}/{os.getenv('POSTGRES_DB')}"
-PG_PROPS = {
-    "user": os.getenv("POSTGRES_USER"),
-    "password": os.getenv("POSTGRES_PASSWORD"),
-    "driver": "org.postgresql.Driver",
-}
+# ── Constants ─────────────────────────────────────────────────────────────────
 
-JUNK_TERMS = [
+JUNK_TERMS: set[str] = {
     "drug ineffective", "product use issue", "off label use", "off-label use",
     "drug interaction", "no adverse event", "product quality issue",
     "condition aggravated", "intentional product use issue",
@@ -32,100 +26,209 @@ JUNK_TERMS = [
     "inappropriate schedule of product administration",
     "drug administered to patient of inappropriate age",
     "expired product administered", "wrong technique in product usage process",
-]
+}
 
-# ── Spark ─────────────────────────────────────────────────────────────────────
-def get_spark():
-    os.environ["HADOOP_HOME"] = "C:\\hadoop"
-    os.environ["PATH"] += ";C:\\hadoop\\bin"
-    jar = os.path.abspath("jars/postgresql-42.6.0.jar")
-    return (SparkSession.builder
-        .appName("MedSignal-Branch2")
-        .config("spark.sql.shuffle.partitions", "50")
-        .config("spark.sql.ansi.enabled", "false")
-        .config("spark.driver.extraClassPath", jar)
-        .config("spark.executor.extraClassPath", jar)
-        .getOrCreate())
+LATE_QUARTERS: set[str] = {"2023Q3", "2023Q4"}
 
-# ── PRR ───────────────────────────────────────────────────────────────────────
-def run(spark):
-    # Read
-    pairs = spark.read.jdbc(PG_URL, "drug_reaction_pairs", properties=PG_PROPS)
-    total_rows  = pairs.count()
-    total_cases = pairs.select("primaryid").distinct().count()
-    log.info("Rows: %d | Cases: %d", total_rows, total_cases)
+PRR_THRESHOLD    = 2.0
+POC_THRESHOLD    = 1_000_000   # rows below this → relaxed thresholds
+SPIKE_MAX_PCT    = 0.70        # single-quarter concentration limit
+SURGE_LATE_PCT   = 0.85        # Q3+Q4 concentration limit
 
-    # Thresholds — relaxed if data is partial
-    min_a, min_c, min_drug = (30, 100, 500) if total_rows < 1_000_000 else (50, 200, 1000)
+# ── Database ──────────────────────────────────────────────────────────────────
 
-    # Aggregations
-    drug_totals     = pairs.groupBy("drug_key").agg(count("primaryid").alias("drug_total"))
-    reaction_totals = pairs.groupBy("pt").agg(count("primaryid").alias("reaction_total"))
-    a_counts = pairs.groupBy("drug_key", "pt").agg(
-        count("primaryid").alias("A"),
-        count(when(col("death_flag") == 1, 1)).alias("death_count"),
-        count(when(col("hosp_flag")  == 1, 1)).alias("hosp_count"),
-        count(when(col("lt_flag")    == 1, 1)).alias("lt_count"),
+def get_conn() -> psycopg2.extensions.connection:
+    return psycopg2.connect(
+        host    = os.getenv("POSTGRES_HOST"),
+        port    = os.getenv("POSTGRES_PORT"),
+        dbname  = os.getenv("POSTGRES_DB"),
+        user    = os.getenv("POSTGRES_USER"),
+        password= os.getenv("POSTGRES_PASSWORD"),
     )
 
-    # PRR formula
-    prr_df = (a_counts
-        .join(drug_totals,     "drug_key")
-        .join(reaction_totals, "pt")
-        .withColumn("B", col("drug_total")     - col("A"))
-        .withColumn("C", col("reaction_total") - col("A"))
-        .withColumn("D", lit(total_cases) - col("drug_total") - col("reaction_total") + col("A"))
-        .withColumn("PRR",
-            when((col("C") > 0) & (col("C") + col("D") > 0) & (col("A") + col("B") > 0),
-                (col("A") / (col("A") + col("B"))) / (col("C") / (col("C") + col("D")))
-            ).otherwise(None))
-        .filter(col("PRR").isNotNull()))
 
-    # Filters
-    signals = (prr_df
-        .filter(col("A")          >= min_a)
-        .filter(col("C")          >= min_c)
-        .filter(col("drug_total") >= min_drug)
-        .filter(col("PRR")        >= 2.0)
-        .filter(~col("pt").isin(JUNK_TERMS)))
+def get_engine() -> sqlalchemy.engine.Engine:
+    return sqlalchemy.create_engine("postgresql+psycopg2://", creator=get_conn)
 
-    log.info("Signals after filters: %d", signals.count())
+# ── Scoring ───────────────────────────────────────────────────────────────────
 
-    # Checkpoint
-    fin = signals.filter(col("drug_key").contains("finasteride") & col("pt").contains("depression")).collect()
-    if fin:
-        log.info("CHECKPOINT PASSED — finasteride x depression PRR=%.2f A=%d", fin[0]["PRR"], fin[0]["A"])
-    else:
-        log.warning("CHECKPOINT: finasteride-depression not found — expected with partial data")
+def compute_stat_score(prr: float, case_count: int,
+                       death: int, lt: int, hosp: int) -> float:
+    """
+    StatScore ∈ [0, 1] — read by Agent 1 from signals_flagged.
 
-    # Write
-    output = signals.select(
-        col("drug_key"), col("pt"),
-        col("PRR").alias("prr"),
-        col("A").alias("drug_reaction_count"),
-        col("B").alias("drug_no_reaction_count"),
-        col("C").alias("other_reaction_count"),
-        col("D").alias("other_no_reaction_count"),
-        col("death_count"), col("hosp_count"), col("lt_count"), col("drug_total"),
-    ).cache()
+    prr_score    = min(PRR / 4.0, 1.0)                    weight 0.50
+    volume_score = min(log10(A) / log10(50), 1.0)          weight 0.30
+    severity     = 1.0 death | 0.75 LT | 0.50 hosp | 0.0  weight 0.20
+    """
+    prr_s = min(prr / 4.0, 1.0)
+    vol_s = min(math.log10(max(case_count, 1)) / math.log10(50), 1.0)
+    sev_s = 1.0 if death else 0.75 if lt else 0.50 if hosp else 0.0
+    return round(prr_s * 0.50 + vol_s * 0.30 + sev_s * 0.20, 4)
 
-    final_count = output.count()
+# ── Pipeline steps ────────────────────────────────────────────────────────────
 
-    # Truncate safely (FK constraints prevent DROP)
-    conn = psycopg2.connect(
-        host=os.getenv("POSTGRES_HOST"), port=os.getenv("POSTGRES_PORT"),
-        dbname=os.getenv("POSTGRES_DB"), user=os.getenv("POSTGRES_USER"),
-        password=os.getenv("POSTGRES_PASSWORD"),
+def load_pairs(engine: sqlalchemy.engine.Engine) -> pd.DataFrame:
+    return pd.read_sql("""
+        SELECT primaryid, drug_key, pt,
+               death_flag, hosp_flag, lt_flag, source_quarter
+        FROM   drug_reaction_pairs
+    """, engine)
+
+
+def compute_prr(pairs: pd.DataFrame) -> pd.DataFrame:
+    total_cases = pairs["primaryid"].nunique()
+
+    a_df = pairs.groupby(["drug_key", "pt"]).agg(
+        A          =("primaryid", "count"),
+        death_count=("death_flag", "sum"),
+        hosp_count =("hosp_flag",  "sum"),
+        lt_count   =("lt_flag",    "sum"),
+    ).reset_index()
+
+    drug_totals     = (pairs.groupby("drug_key")["primaryid"]
+                       .count().rename("drug_total").reset_index())
+    reaction_totals = (pairs.groupby("pt")["primaryid"]
+                       .count().rename("reaction_total").reset_index())
+
+    df = a_df.merge(drug_totals, on="drug_key").merge(reaction_totals, on="pt")
+    df["B"] = df["drug_total"]     - df["A"]
+    df["C"] = df["reaction_total"] - df["A"]
+    df["D"] = total_cases - df["drug_total"] - df["reaction_total"] + df["A"]
+
+    valid = (df["C"] > 0) & ((df["C"] + df["D"]) > 0) & ((df["A"] + df["B"]) > 0)
+    df.loc[valid, "PRR"] = (
+        (df.loc[valid, "A"] / (df.loc[valid, "A"] + df.loc[valid, "B"])) /
+        (df.loc[valid, "C"] / (df.loc[valid, "C"] + df.loc[valid, "D"]))
     )
-    conn.cursor().execute("TRUNCATE TABLE signals_flagged CASCADE")
-    conn.commit(); conn.close()
+    return df.dropna(subset=["PRR"])
 
-    output.write.jdbc(PG_URL, "signals_flagged", mode="append", properties=PG_PROPS)
-    output.unpersist()
-    log.info("Written %d signals to signals_flagged", final_count)
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+def apply_threshold_filters(df: pd.DataFrame, min_a: int,
+                            min_c: int, min_drug: int) -> pd.DataFrame:
+    return df[
+        (df["A"]          >= min_a)   &
+        (df["C"]          >= min_c)   &
+        (df["drug_total"] >= min_drug) &
+        (df["PRR"]        >= PRR_THRESHOLD) &
+        (~df["pt"].isin(JUNK_TERMS))
+    ].copy()
+
+
+def apply_spike_filter(signals: pd.DataFrame,
+                       pairs: pd.DataFrame) -> pd.DataFrame:
+    if pairs["source_quarter"].nunique() <= 1:
+        log.info("Single quarter detected — skipping spike filter")
+        return signals
+
+    qcounts = (pairs.groupby(["drug_key", "pt", "source_quarter"])
+               .size().rename("qcount").reset_index())
+    qtotals = (qcounts.groupby(["drug_key", "pt"])
+               .agg(max_q=("qcount", "max"), total_q=("qcount", "sum"))
+               .reset_index())
+    qtotals["spike_pct"] = qtotals["max_q"] / qtotals["total_q"]
+    clean = qtotals[qtotals["spike_pct"] <= SPIKE_MAX_PCT][["drug_key", "pt"]]
+    result = signals.merge(clean, on=["drug_key", "pt"], how="inner")
+    log.info("After spike filter: %d", len(result))
+    return result
+
+
+def apply_surge_filter(signals: pd.DataFrame,
+                       pairs: pd.DataFrame) -> pd.DataFrame:
+    if not pairs["source_quarter"].isin(LATE_QUARTERS).any():
+        log.info("No Q3/Q4 data — skipping late-surge filter")
+        return signals
+
+    surge = pairs.copy()
+    surge["is_late"] = surge["source_quarter"].isin(LATE_QUARTERS).astype(int)
+    late = (surge.groupby(["drug_key", "pt"])
+            .agg(late_n=("is_late", "sum"), total_n=("primaryid", "count"))
+            .reset_index())
+    late["late_pct"] = late["late_n"] / late["total_n"]
+    non_surge = late[late["late_pct"] <= SURGE_LATE_PCT][["drug_key", "pt"]]
+    result = signals.merge(non_surge, on=["drug_key", "pt"], how="inner")
+    log.info("After late-surge filter: %d", len(result))
+    return result
+
+
+def run_checkpoint(signals: pd.DataFrame) -> bool:
+    fin = signals[
+        signals["drug_key"].str.contains("finasteride", case=False) &
+        signals["pt"].str.contains("depression",  case=False)
+    ]
+    if fin.empty:
+        log.warning("CHECKPOINT: finasteride × depression not found — needs full dataset")
+        return False
+    row = fin.iloc[0]
+    log.info("CHECKPOINT PASSED — PRR=%.2f  A=%d", row["PRR"], row["A"])
+    return True
+
+
+def write_signals(signals: pd.DataFrame) -> None:
+    signals = signals.assign(
+        stat_score=signals.apply(
+            lambda r: compute_stat_score(
+                r["PRR"], int(r["A"]),
+                int(r["death_count"]), int(r["lt_count"]), int(r["hosp_count"])
+            ), axis=1
+        )
+    )
+
+    records = signals.rename(columns={
+        "PRR": "prr",
+        "A":   "drug_reaction_count",
+        "B":   "drug_no_reaction_count",
+        "C":   "other_reaction_count",
+        "D":   "other_no_reaction_count",
+    })[[
+        "drug_key", "pt", "prr",
+        "drug_reaction_count", "drug_no_reaction_count",
+        "other_reaction_count", "other_no_reaction_count",
+        "death_count", "hosp_count", "lt_count",
+        "drug_total", "stat_score",
+    ]].to_dict("records")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("TRUNCATE TABLE signals_flagged CASCADE")
+            cur.executemany("""
+                INSERT INTO signals_flagged (
+                    drug_key, pt, prr,
+                    drug_reaction_count, drug_no_reaction_count,
+                    other_reaction_count, other_no_reaction_count,
+                    death_count, hosp_count, lt_count,
+                    drug_total, stat_score
+                ) VALUES (
+                    %(drug_key)s, %(pt)s, %(prr)s,
+                    %(drug_reaction_count)s, %(drug_no_reaction_count)s,
+                    %(other_reaction_count)s, %(other_no_reaction_count)s,
+                    %(death_count)s, %(hosp_count)s, %(lt_count)s,
+                    %(drug_total)s, %(stat_score)s
+                )
+            """, records)
+        conn.commit()
+
+    log.info("Written %d signals to signals_flagged", len(records))
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
-    spark = get_spark()
-    run(spark)
-    spark.stop()
+    engine = get_engine()
+
+    pairs      = load_pairs(engine)
+    total_rows = len(pairs)
+    log.info("Rows: %d | Cases: %d", total_rows, pairs["primaryid"].nunique())
+
+    min_a, min_c, min_drug = (
+        (30, 100, 500) if total_rows < POC_THRESHOLD else (50, 200, 1000)
+    )
+
+    prr_df  = compute_prr(pairs)
+    signals = apply_threshold_filters(prr_df, min_a, min_c, min_drug)
+    log.info("After threshold + junk filters: %d", len(signals))
+
+    signals = apply_spike_filter(signals, pairs)
+    signals = apply_surge_filter(signals, pairs)
+
+    run_checkpoint(signals)
+    write_signals(signals)
