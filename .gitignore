@@ -34,3 +34,5 @@ kafka-logs/
 
 poetry.lock
 pyproject.toml
+
+jars/
