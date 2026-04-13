@@ -40,6 +40,9 @@ from pathlib import Path
 
 import structlog
 from dotenv import load_dotenv
+import psycopg2
+import pandas as pd
+from sqlalchemy import create_engine
 
 # ---------------------------------------------------------------------------
 # Structlog — console renderer, same config as faers_prep.py
@@ -399,17 +402,21 @@ def filter_and_normalize_drug(drug_df, pg_conn_str: str, spark):
         )
     )
 
-    # Step 6c — Load rxnorm_cache via psycopg2 (reliable small table read)
-    import psycopg2
-    import pandas as pd
+    # Step 6c — Load rxnorm_cache via SQLAlchemy + psycopg2
+    # psycopg2 is more reliable than JDBC for small table reads —
+    # no JVM DNS dependency, no IPv6 issues on Windows
+    engine = create_engine(
+        "postgresql+psycopg2://",
+        creator=lambda: psycopg2.connect(pg_conn_str),
+    )
 
-    conn = psycopg2.connect(pg_conn_str)
     cache_pd = pd.read_sql(
         "SELECT UPPER(TRIM(prod_ai)) as prod_ai_upper, canonical_name, rxcui "
         "FROM rxnorm_cache WHERE canonical_name IS NOT NULL",
-        conn
+        con=engine,
     )
-    conn.close()
+
+    engine.dispose()
 
     cache_df = spark.createDataFrame(cache_pd)
 
@@ -419,34 +426,31 @@ def filter_and_normalize_drug(drug_df, pg_conn_str: str, spark):
         entries=len(cache_pd),
     )
 
-    # Uppercase prod_ai for join key
+    # Join drug_df against cache on uppercased prod_ai
     drug_df = drug_df.withColumn(
         "prod_ai_upper",
         F.upper(F.trim(F.col("prod_ai")))
     )
 
-    # Left join — unmatched drugs get canonical_name = null, rxcui = null
     drug_df = drug_df.join(cache_df, on="prod_ai_upper", how="left")
 
-    # Apply normalization hierarchy using native Spark functions
-    # rxcui stays in the dataframe — null for unresolved drugs
+    # Apply normalization hierarchy
     drug_df = drug_df.withColumn(
         "drug_key",
         F.when(
             F.col("canonical_name").isNotNull(),
-            F.col("canonical_name"),                  # level 1: cache hit
+            F.col("canonical_name"),
         ).when(
             F.col("prod_ai").isNotNull(),
-            F.lower(F.trim(F.col("prod_ai"))),        # level 2: prod_ai as-is
+            F.lower(F.trim(F.col("prod_ai"))),
         ).otherwise(
-            F.lower(F.trim(F.col("drugname")))        # level 3: drugname fallback
+            F.lower(F.trim(F.col("drugname")))
         )
     ).drop("prod_ai_upper", "canonical_name")
 
     return (
         drug_df
         .filter(F.col("drug_key").isNotNull())
-        # One row per (primaryid, drug_key) — same drug reported twice counts once
         .dropDuplicates(["primaryid", "drug_key"])
     )
 
@@ -570,39 +574,24 @@ def build_drug_reaction_pairs(demo_df, drug_df, reac_df, outc_df):
 # PostgreSQL writer
 # ---------------------------------------------------------------------------
 
-def write_to_postgres(df, table: str, pg_conn_str: str) -> int:
+def write_to_postgres(df, table: str, jdbc_url: str, props: dict) -> int:
     """
-    Writes a dataframe to PostgreSQL via psycopg2 + SQLAlchemy.
-    More reliable than JDBC on Windows — no JVM DNS dependency.
-    Uses to_sql with chunksize to avoid memory issues on large dataframes.
+    Writes a dataframe to PostgreSQL (Supabase) via JDBC.
+    Uses append mode — composite PK (primaryid, drug_key, pt) prevents duplicates.
+    Returns the row count written.
     """
-    import psycopg2
-    from sqlalchemy import create_engine
-
     logger.info("writing_to_postgres", table=table)
 
-    # Convert Spark dataframe to pandas
-    pandas_df = df.toPandas()
-
-    # SQLAlchemy engine using psycopg2 as the underlying driver
-    engine = create_engine(
-        "postgresql+psycopg2://",
-        creator=lambda: psycopg2.connect(pg_conn_str),
+    df.write.jdbc(
+        url=jdbc_url,
+        table=table,
+        mode="append",
+        properties=props,
     )
 
-    pandas_df.to_sql(
-        name=table,
-        con=engine,
-        if_exists="append",
-        index=False,
-        chunksize=10000,   # write in batches to avoid memory pressure
-        method="multi",    # use multi-row INSERT for speed
-    )
-
-    count = len(pandas_df)
+    count = df.count()
     logger.info("write_complete", table=table, rows=count)
     return count
-
 
 # ---------------------------------------------------------------------------
 # Row count validation
@@ -916,7 +905,7 @@ def main():
     # ------------------------------------------------------------------
     # 12. Write to PostgreSQL
     # ------------------------------------------------------------------
-    write_to_postgres(pairs_df, args.table, pg_conn_str)
+    write_to_postgres(pairs_df, args.table, jdbc_url, jdbc_props)
 
     # ------------------------------------------------------------------
     # 13. PRR validation checkpoint
