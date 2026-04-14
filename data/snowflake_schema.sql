@@ -115,3 +115,6 @@ CREATE TABLE IF NOT EXISTS hitl_decisions (
 
 
 SHOW TABLES IN DATABASE MEDSIGNAL;
+
+--Adding a new column in signals_flagged table
+ALTER TABLE signals_flagged ADD COLUMN IF NOT EXISTS stat_score FLOAT;
