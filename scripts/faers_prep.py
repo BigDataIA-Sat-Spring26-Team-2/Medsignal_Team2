@@ -8,7 +8,7 @@ from kafka import KafkaProducer, KafkaConsumer
 from kafka.errors import NoBrokersAvailable
 from kafka.structs import TopicPartition
 
-BROKER  = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+BROKER   = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 DATA_DIR = os.getenv("FAERS_DATA_DIR", "data/faers")
 
 TOPIC_MAP = {
@@ -23,12 +23,15 @@ TOPIC_MAP = {
 
 def get_published_quarters(broker: str, topic: str) -> set[str]:
     """
-    Samples messages from a Kafka topic to discover which
-    source_quarters have already been published.
+    Samples the last 500 messages per partition from a Kafka topic
+    to discover which source_quarters have already been published.
 
-    Strategy: seek to the last 500 messages per partition and
-    extract unique source_quarter values. This is fast regardless
-    of topic size — we never read all messages.
+    Uses faers_demo as the representative topic — if a quarter is
+    present in demo it was published as a complete set across all
+    four topics. No need to check each topic separately.
+
+    consumer_timeout_ms=1000 — 1 second is enough for a local broker.
+    The original 3000ms added unnecessary latency on sparse topics.
 
     Returns a set of quarter labels e.g. {'2023Q1', '2023Q2'}.
     Returns an empty set if the topic is empty or unreachable.
@@ -37,7 +40,7 @@ def get_published_quarters(broker: str, topic: str) -> set[str]:
         consumer = KafkaConsumer(
             bootstrap_servers=broker,
             enable_auto_commit=False,
-            consumer_timeout_ms=3000,
+            consumer_timeout_ms=1000,
             value_deserializer=lambda v: json.loads(v.decode("utf-8")),
         )
 
@@ -61,11 +64,12 @@ def get_published_quarters(broker: str, topic: str) -> set[str]:
             if end == begin:
                 continue  # empty partition
 
-            # Sample last 500 messages per partition
+            # Sample last 500 messages per partition —
+            # fast regardless of total topic size
             seek_to = max(begin, end - 500)
             consumer.seek(tp, seek_to)
 
-        # Read sampled messages
+        # Read sampled messages and extract source_quarter values
         for msg in consumer:
             quarter = msg.value.get("source_quarter")
             if quarter:
@@ -202,6 +206,7 @@ Examples:
   poetry run python scripts/faers_prep.py --year 2023 --dry-run
 
   # Force republish even if quarter already in Kafka
+  # Only use after docker compose down -v to wipe Kafka state
   poetry run python scripts/faers_prep.py --year 2023 --quarters 1 --force
         """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -231,7 +236,7 @@ Examples:
         help=(
             "Republish even if quarter already exists in Kafka topics. "
             "WARNING: creates duplicates. Only use after docker compose down -v "
-            "to wipe Kafka state."
+            "to wipe Kafka state first."
         ),
     )
     return parser.parse_args()
@@ -271,12 +276,22 @@ def main():
     if not args.dry_run:
         producer = make_producer()
 
-    grand_total  = 0
+    grand_total   = 0
     missing_files = []
-    skipped      = []
+    skipped       = []
 
     for quarter_label, quarter_path in quarters:
         print(f"--- Quarter: {quarter_label} ---")
+
+        # ── Check once per quarter, not once per file ──────────────
+        # faers_demo is the representative topic — if a quarter is
+        # present in demo it was published as a complete set across
+        # all four topics. Checking once per quarter instead of once
+        # per file reduces Kafka consumer connections from 4×N to N.
+        already_published = set()
+        if not args.dry_run and not args.force:
+            already_published = get_published_quarters(BROKER, "faers_demo")
+        # ───────────────────────────────────────────────────────────
 
         for file_type, topic in TOPIC_MAP.items():
             pattern = f"{quarter_path}/{file_type}*.txt"
@@ -289,22 +304,13 @@ def main():
 
             for filepath in files:
 
-                # ── Deduplication check ───────────────────────────
-                # Before publishing, sample existing Kafka messages
-                # to see if this quarter is already present.
-                # Skips the file if found, unless --force is set.
-                # This prevents duplicate data when faers_prep.py
-                # is re-run without wiping Kafka first.
-                if not args.dry_run and not args.force:
-                    existing = get_published_quarters(BROKER, topic)
-                    if quarter_label in existing:
-                        print(
-                            f"  SKIP: {quarter_label} already in "
-                            f"{topic} — use --force to republish"
-                        )
-                        skipped.append(f"{quarter_label}/{file_type}")
-                        continue
-                # ─────────────────────────────────────────────────
+                if quarter_label in already_published:
+                    print(
+                        f"  SKIP: {quarter_label} already in "
+                        f"{topic} — use --force to republish"
+                    )
+                    skipped.append(f"{quarter_label}/{file_type}")
+                    continue
 
                 print(f"  Publishing {filepath} -> {topic}")
                 count = publish_file(
