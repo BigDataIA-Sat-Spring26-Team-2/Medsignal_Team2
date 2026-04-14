@@ -2,18 +2,18 @@
 spark_branch1.py — MedSignal Spark Branch 1
 
 Reads the four raw FAERS Kafka topics as static batch dataframes and
-produces a clean drug_reaction_pairs table in PostgreSQL (Supabase).
+produces a clean drug_reaction_pairs table in Snowflake.
 
 Pipeline steps:
     1.  Load .env and build SparkSession
-    2.  Download PostgreSQL JDBC jar if not present
+    2.  Download Snowflake JDBC jar if not present
     3.  Read four Kafka topics as static batch dataframes
     4.  Parse JSON values — all fields as StringType first, cast after
     5.  DEMO  → caseversion deduplication (window function, keep highest per caseid)
     6.  DRUG  → PS filter → combination drug split → RxNorm normalize → pair dedup
     7.  REAC  → deduplication on (primaryid, pt)
     8.  OUTC  → aggregate death/hosp/lt flags per primaryid
-    9.  Four-file join → pair-level dedup → write to PostgreSQL
+    9.  Four-file join → pair-level dedup → write to Snowflake
     10. Gabapentin validation checkpoint
 
 Usage:
@@ -23,13 +23,13 @@ Usage:
     # With row limit for quick smoke test
     poetry run python pipelines/spark_branch1.py --quarter 2023Q1 --limit 500000
 
-    # Full single quarter run
-    poetry run python pipelines/spark_branch1.py --quarter 2023Q1
+    # Write to test table
+    poetry run python pipelines/spark_branch1.py --quarter 2023Q1 --table drug_reaction_pairs_test
 
 Environment variables (loaded from .env):
-    POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB,
-    POSTGRES_USER, POSTGRES_PASSWORD,
-    KAFKA_BOOTSTRAP_SERVERS
+    SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER, SNOWFLAKE_PASSWORD,
+    SNOWFLAKE_DATABASE, SNOWFLAKE_SCHEMA, SNOWFLAKE_WAREHOUSE,
+    KAFKA_BOOTSTRAP_SERVERS, HADOOP_HOME
 """
 
 import argparse
@@ -38,10 +38,11 @@ import sys
 import urllib.request
 from pathlib import Path
 
+import pandas as pd
+import psycopg2
+import snowflake.connector
 import structlog
 from dotenv import load_dotenv
-import psycopg2
-import pandas as pd
 from sqlalchemy import create_engine
 
 # ---------------------------------------------------------------------------
@@ -65,11 +66,15 @@ logger = structlog.get_logger()
 # Constants
 # ---------------------------------------------------------------------------
 
-JDBC_DIR    = Path("drivers")
-JDBC_JAR    = JDBC_DIR / "postgresql-42.7.3.jar"
-JDBC_URL_DL = "https://jdbc.postgresql.org/download/postgresql-42.7.3.jar"
+JDBC_DIR     = Path("drivers")
+JDBC_JAR     = JDBC_DIR / "snowflake-jdbc-3.14.4.jar"
+JDBC_URL_DL  = (
+    "https://repo1.maven.org/maven2/net/snowflake/"
+    "snowflake-jdbc/3.14.4/snowflake-jdbc-3.14.4.jar"
+)
 
-KAFKA_PACKAGE = "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.3"
+KAFKA_PACKAGE      = "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.3"
+SNOWFLAKE_PACKAGE  = "net.snowflake:spark-snowflake_2.12:2.12.0-spark_3.3"
 
 # Tuned for local mode — default 200 is designed for large clusters
 SHUFFLE_PARTITIONS = "8"
@@ -80,12 +85,71 @@ CHECKPOINT_PT   = "cardio-respiratory arrest"
 
 
 # ---------------------------------------------------------------------------
+# Snowflake connection helper
+# ---------------------------------------------------------------------------
+
+def get_sf_conn(sf_config: dict) -> snowflake.connector.SnowflakeConnection:
+    """
+    Returns a snowflake-connector-python connection.
+    Used for small table reads (rxnorm_cache) and point queries (checkpoint).
+    Much faster than JDBC for small operations — no JVM overhead.
+    """
+    return snowflake.connector.connect(
+        account  = sf_config["account"],
+        user     = sf_config["user"],
+        password = sf_config["password"],
+        database = sf_config["database"],
+        schema   = sf_config["schema"],
+        warehouse= sf_config["warehouse"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# RxNorm cache loader
+# ---------------------------------------------------------------------------
+
+def load_rxnorm_cache(sf_config: dict, spark) -> None:
+    """
+    Loads the RxNorm cache from Snowflake rxnorm_cache table via
+    snowflake-connector-python → pandas → Spark dataframe.
+
+    Returns a Spark dataframe with columns:
+        prod_ai_upper  (uppercased prod_ai for join key)
+        canonical_name
+        rxcui
+
+    Using snowflake-connector-python instead of JDBC avoids JVM DNS
+    issues and is much faster for a small 8,636-row table.
+    """
+    from pyspark.sql import functions as F
+
+    logger.info("rxnorm_cache_loading", source="snowflake")
+
+    conn = get_sf_conn(sf_config)
+    cur  = conn.cursor()
+    cur.execute(
+        "SELECT UPPER(TRIM(prod_ai)) as prod_ai_upper, canonical_name, rxcui "
+        "FROM rxnorm_cache WHERE canonical_name IS NOT NULL"
+    )
+    rows    = cur.fetchall()
+    columns = [desc[0].lower() for desc in cur.description]
+    cur.close()
+    conn.close()
+
+    cache_pd = pd.DataFrame(rows, columns=columns)
+    cache_df = spark.createDataFrame(cache_pd)
+
+    logger.info("rxnorm_cache_loaded", source="snowflake", entries=len(cache_pd))
+    return cache_df
+
+
+# ---------------------------------------------------------------------------
 # JDBC jar download
 # ---------------------------------------------------------------------------
 
-def ensure_jdbc_jar() -> str:
+def ensure_snowflake_jdbc_jar() -> str:
     """
-    Downloads the PostgreSQL JDBC jar if not already present.
+    Downloads the Snowflake JDBC jar if not already present.
     Returns the absolute path to the jar.
     """
     JDBC_DIR.mkdir(parents=True, exist_ok=True)
@@ -114,7 +178,7 @@ def build_spark(jdbc_jar_path: str):
     Builds and returns a SparkSession configured for:
       - Local mode using all available cores
       - Kafka batch reading (via spark-sql-kafka package)
-      - PostgreSQL writing (via JDBC jar)
+      - Snowflake writing (via Snowflake Spark connector + JDBC jar)
     """
     hadoop_home = os.getenv("HADOOP_HOME")
     if hadoop_home:
@@ -123,22 +187,21 @@ def build_spark(jdbc_jar_path: str):
     else:
         logger.warning("hadoop_home_not_set", hint="Set HADOOP_HOME in .env for Windows")
 
-
     from pyspark.sql import SparkSession
 
     spark = (
         SparkSession.builder
-        .appName("MedSignal-Branch1")
+        .appName("MedSignal-Branch1-Snowflake")
         .master("local[*]")
-        # Kafka connector — downloaded from Maven on first run, cached after
-        .config("spark.jars.packages", KAFKA_PACKAGE)
-        # PostgreSQL JDBC driver — pre-downloaded by ensure_jdbc_jar()
+        # Kafka + Snowflake connectors — downloaded from Maven on first run
+        .config("spark.jars.packages", f"{KAFKA_PACKAGE},{SNOWFLAKE_PACKAGE}")
+        # Snowflake JDBC jar — pre-downloaded by ensure_snowflake_jdbc_jar()
         .config("spark.jars", jdbc_jar_path)
         # Tuned for local mode — default 200 is for large clusters
         .config("spark.sql.shuffle.partitions", SHUFFLE_PARTITIONS)
-        # Increase driver memory for broadcast join and large dataframes
+        # Increase driver memory for large dataframes
         .config("spark.driver.memory", "4g")
-        # Suppress verbose Spark/Kafka INFO logs — keep console readable
+        # Suppress verbose Spark/Kafka INFO logs
         .config("spark.log.level", "WARN")
         .getOrCreate()
     )
@@ -159,15 +222,7 @@ def read_kafka_topic(
 ):
     """
     Reads a Kafka topic as a static batch dataframe.
-
-    Uses spark.read (batch), not spark.readStream, because FAERS data
-    is a fixed quarterly dataset — all records exist at read time.
-
-    Args:
-        limit: if provided, caps rows read per topic.
-               Use during development to speed up test runs.
-               Quarter filtering happens in the parse functions after
-               JSON parsing, not here.
+    Uses spark.read (batch) not spark.readStream — FAERS is a fixed quarterly dataset.
     """
     df = (
         spark.read
@@ -190,18 +245,11 @@ def read_kafka_topic(
 # ---------------------------------------------------------------------------
 # JSON parsers — one per FAERS file type
 # ---------------------------------------------------------------------------
-# All fields are parsed as StringType first, then cast to the correct type.
-# This is necessary because faers_prep.py publishes all values as JSON strings
-# (e.g. "primaryid": "100640519") — from_json with LongType returns null.
-#
-# Quarter filtering is applied after JSON parsing so source_quarter is
-# available as a typed column to filter on.
+# All fields parsed as StringType first, then cast.
+# faers_prep.py publishes all values as JSON strings —
+# from_json with LongType would silently return null.
 
 def parse_demo(spark, raw_df, quarter: str = None):
-    """
-    Parses the faers_demo topic into a typed dataframe.
-    Optionally filters to a single quarter via source_quarter.
-    """
     from pyspark.sql import functions as F
     from pyspark.sql.types import (
         IntegerType, LongType, StringType, StructField, StructType
@@ -233,10 +281,6 @@ def parse_demo(spark, raw_df, quarter: str = None):
 
 
 def parse_drug(spark, raw_df, quarter: str = None):
-    """
-    Parses the faers_drug topic into a typed dataframe.
-    Optionally filters to a single quarter via source_quarter.
-    """
     from pyspark.sql import functions as F
     from pyspark.sql.types import (
         LongType, StringType, StructField, StructType
@@ -267,10 +311,6 @@ def parse_drug(spark, raw_df, quarter: str = None):
 
 
 def parse_reac(spark, raw_df, quarter: str = None):
-    """
-    Parses the faers_reac topic into a typed dataframe.
-    Optionally filters to a single quarter via source_quarter.
-    """
     from pyspark.sql import functions as F
     from pyspark.sql.types import (
         LongType, StringType, StructField, StructType
@@ -298,10 +338,6 @@ def parse_reac(spark, raw_df, quarter: str = None):
 
 
 def parse_outc(spark, raw_df, quarter: str = None):
-    """
-    Parses the faers_outc topic into a typed dataframe.
-    Optionally filters to a single quarter via source_quarter.
-    """
     from pyspark.sql import functions as F
     from pyspark.sql.types import (
         LongType, StringType, StructField, StructType
@@ -333,14 +369,8 @@ def parse_outc(spark, raw_df, quarter: str = None):
 
 def dedup_demo(demo_df):
     """
-    Step 5: Caseversion deduplication on DEMO.
-
-    FAERS cases are resubmitted across quarters as follow-up updates,
-    each incrementing caseversion. Keep only the highest caseversion
-    per caseid — this is the most recent authoritative version of the case.
-
-    Uses a window function rather than groupBy+max because we need to
-    keep the entire row, not just the max caseversion value.
+    Caseversion deduplication — keep highest caseversion per caseid.
+    FAERS cases are resubmitted as follow-up updates across quarters.
     """
     from pyspark.sql import functions as F
     from pyspark.sql.window import Window
@@ -355,35 +385,25 @@ def dedup_demo(demo_df):
     )
 
 
-def filter_and_normalize_drug(drug_df, pg_conn_str: str, spark):
+def filter_and_normalize_drug(drug_df, cache_df, spark):
     """
-    Step 6: PS filter, combination drug split, and RxNorm normalization.
+    PS filter, combination drug split, and RxNorm normalization.
 
-    PS filter:
-        Keep only role_cod = PS (Primary Suspect).
-        Discards SS (Secondary Suspect), C (Concomitant), I (Interacting).
+    PS filter: keep only role_cod = PS (Primary Suspect).
+    Combination split: "ACETAMINOPHEN\\HYDROCODONE" → "ACETAMINOPHEN"
+    RxNorm join: left join against rxnorm_cache — carries rxcui through.
 
-    Combination drug split (Option B — matches POC logic):
-        e.g. "ACETAMINOPHEN\\HYDROCODONE" → "ACETAMINOPHEN"
-        Takes the first component only. Applied to both prod_ai and drugname.
-
-    RxNorm normalization via Spark join:
-        Reads rxnorm_cache directly as a Spark dataframe and left joins.
-        This carries rxcui through automatically — no Python dict intermediary.
-        Drugs not in the cache get rxcui = NULL (correct per schema).
-
-        Normalization hierarchy:
-            1. canonical_name from cache if found
-            2. prod_ai lowercased if not in cache
-            3. drugname lowercased if prod_ai is null
+    Normalization hierarchy:
+        1. canonical_name from cache (if found)
+        2. prod_ai lowercased (if not in cache)
+        3. drugname lowercased (if prod_ai is null)
     """
     from pyspark.sql import functions as F
 
-    # Step 6a — PS filter
+    # Step 1 — PS filter
     drug_df = drug_df.filter(F.upper(F.col("role_cod")) == "PS")
 
-    # Step 6b — Split combination drugs on backslash, take first component
-    # e.g. "ACETAMINOPHEN\HYDROCODONE" → "ACETAMINOPHEN"
+    # Step 2 — Split combination drugs on backslash, take first component
     drug_df = (
         drug_df
         .withColumn(
@@ -402,31 +422,7 @@ def filter_and_normalize_drug(drug_df, pg_conn_str: str, spark):
         )
     )
 
-    # Step 6c — Load rxnorm_cache via SQLAlchemy + psycopg2
-    # psycopg2 is more reliable than JDBC for small table reads —
-    # no JVM DNS dependency, no IPv6 issues on Windows
-    engine = create_engine(
-        "postgresql+psycopg2://",
-        creator=lambda: psycopg2.connect(pg_conn_str),
-    )
-
-    cache_pd = pd.read_sql(
-        "SELECT UPPER(TRIM(prod_ai)) as prod_ai_upper, canonical_name, rxcui "
-        "FROM rxnorm_cache WHERE canonical_name IS NOT NULL",
-        con=engine,
-    )
-
-    engine.dispose()
-
-    cache_df = spark.createDataFrame(cache_pd)
-
-    logger.info(
-        "rxnorm_cache_loaded",
-        source="postgres",
-        entries=len(cache_pd),
-    )
-
-    # Join drug_df against cache on uppercased prod_ai
+    # Step 3 — RxNorm join (cache_df already has prod_ai_upper column)
     drug_df = drug_df.withColumn(
         "prod_ai_upper",
         F.upper(F.trim(F.col("prod_ai")))
@@ -434,7 +430,7 @@ def filter_and_normalize_drug(drug_df, pg_conn_str: str, spark):
 
     drug_df = drug_df.join(cache_df, on="prod_ai_upper", how="left")
 
-    # Apply normalization hierarchy
+    # Step 4 — Apply normalization hierarchy
     drug_df = drug_df.withColumn(
         "drug_key",
         F.when(
@@ -456,13 +452,7 @@ def filter_and_normalize_drug(drug_df, pg_conn_str: str, spark):
 
 
 def dedup_reac(reac_df):
-    """
-    Step 7: REAC deduplication.
-
-    Removes duplicate reaction terms per case.
-    One row per (primaryid, pt) — same reaction reported twice counts once.
-    pt is lowercased for consistent matching downstream.
-    """
+    """One row per (primaryid, pt) — same reaction reported twice counts once."""
     from pyspark.sql import functions as F
 
     return (
@@ -474,19 +464,8 @@ def dedup_reac(reac_df):
 
 def aggregate_outc(outc_df):
     """
-    Step 8: OUTC aggregation.
-
-    OUTC has one row per outcome code per case. A case can have multiple
-    outcomes (e.g. both DE and HO). Collapse to three binary flags per
-    primaryid using max() — which acts as a logical OR across outcome codes.
-
-    outc_cod values:
-        DE → death_flag = 1
-        HO → hosp_flag  = 1
-        LT → lt_flag    = 1
-
-    Left join in build_drug_reaction_pairs() ensures cases with no OUTC
-    entry are preserved with all flags = 0 (~28% of FAERS cases).
+    Collapse OUTC to three binary flags per primaryid using max() as logical OR.
+    DE → death_flag, HO → hosp_flag, LT → lt_flag.
     """
     from pyspark.sql import functions as F
 
@@ -506,62 +485,39 @@ def aggregate_outc(outc_df):
 
 def build_drug_reaction_pairs(demo_df, drug_df, reac_df, outc_df):
     """
-    Step 9: Four-file join and pair-level deduplication.
+    Four-file join and pair-level deduplication.
 
-    source_quarter exists in all four dataframes (injected by faers_prep.py).
-    caseid exists in both DRUG and DEMO.
-    Both are dropped from REAC/OUTC/DRUG before joining to avoid
-    AMBIGUOUS_REFERENCE errors — DEMO is the authoritative source for both.
-
-    Join order:
-        DRUG inner join REAC  → one row per drug-reaction combination per case
-        inner join DEMO       → adds caseid, fda_dt, source_quarter
-        left join OUTC        → adds outcome flags
-
-    Left join for OUTC is critical — ~28% of FAERS cases have no outcome
-    recorded. An inner join would silently drop them and distort PRR values.
-
-    Final dedup on (primaryid, drug_key, pt) gives one clean row per
-    patient-drug-reaction triple — the drug_reaction_pairs table.
-    rxcui is carried through from the RxNorm normalization join.
+    DRUG inner REAC inner DEMO left OUTC.
+    Left join for OUTC preserves ~28% of cases with no outcome recorded.
+    Final dedup: one row per (primaryid, drug_key, pt).
+    rxcui carried through from RxNorm join.
     """
     from pyspark.sql import functions as F
 
-    # Drop ambiguous columns before joining
-    # source_quarter: present in all four — keep from DEMO (authoritative)
-    # caseid: present in both DRUG and DEMO — keep from DEMO (authoritative)
+    # Drop ambiguous columns — keep from DEMO (authoritative)
     drug_clean = drug_df.drop("caseid", "source_quarter")
     reac_clean = reac_df.drop("source_quarter")
     outc_clean = outc_df.drop("source_quarter")
 
-    # DRUG inner join REAC on primaryid
     drug_reac = drug_clean.join(reac_clean, on="primaryid", how="inner")
 
-    # inner join DEMO — brings in caseid, fda_dt, source_quarter
     drug_reac_demo = drug_reac.join(
         demo_df.select("primaryid", "caseid", "fda_dt", "source_quarter"),
         on="primaryid",
         how="inner",
     )
 
-    # left join OUTC — preserves cases with no outcome recorded
     joined = drug_reac_demo.join(outc_clean, on="primaryid", how="left")
-
-    # Fill null outcome flags with 0 (cases with no OUTC entry)
     joined = joined.fillna({"death_flag": 0, "hosp_flag": 0, "lt_flag": 0})
 
-    # Pair-level deduplication — one clean row per patient-drug-reaction triple
     pairs = joined.dropDuplicates(["primaryid", "drug_key", "pt"])
 
-    # Final column selection matching drug_reaction_pairs PostgreSQL schema
-    # rxcui included — null for drugs not resolved by RxNorm cache
     return pairs.select(
         "primaryid",
         "caseid",
         "drug_key",
         "rxcui",
         "pt",
-        # Cast fda_dt from "YYYYMMDD" string to DATE for PostgreSQL
         F.to_date(F.col("fda_dt"), "yyyyMMdd").alias("fda_dt"),
         F.col("death_flag").cast("integer"),
         F.col("hosp_flag").cast("integer"),
@@ -571,27 +527,28 @@ def build_drug_reaction_pairs(demo_df, drug_df, reac_df, outc_df):
 
 
 # ---------------------------------------------------------------------------
-# PostgreSQL writer
+# Snowflake writer
 # ---------------------------------------------------------------------------
 
-def write_to_postgres(df, table: str, jdbc_url: str, props: dict) -> int:
+def write_to_snowflake(df, table: str, jdbc_url: str, jdbc_props: dict) -> int:
     """
-    Writes a dataframe to PostgreSQL (Supabase) via JDBC.
+    Writes a dataframe to Snowflake via Spark Snowflake JDBC connector.
     Uses append mode — composite PK (primaryid, drug_key, pt) prevents duplicates.
     Returns the row count written.
     """
-    logger.info("writing_to_postgres", table=table)
+    logger.info("writing_to_snowflake", table=table)
 
     df.write.jdbc(
         url=jdbc_url,
         table=table,
         mode="append",
-        properties=props,
+        properties=jdbc_props,
     )
 
     count = df.count()
     logger.info("write_complete", table=table, rows=count)
     return count
+
 
 # ---------------------------------------------------------------------------
 # Row count validation
@@ -600,18 +557,11 @@ def write_to_postgres(df, table: str, jdbc_url: str, props: dict) -> int:
 def validate_row_counts(pairs_df, quarter: str = None) -> bool:
     """
     Confirms drug_reaction_pairs contains a plausible number of rows.
-
-    Expected ranges:
-        Single quarter : 900K  – 1.8M rows
-        Full year      : 4M    – 6M   rows
-
-    A count outside the expected range indicates a join error or
-    a missing filter step.
+    Single quarter: 900K–1.8M. Full year: 4M–6M.
     """
     count = pairs_df.count()
 
     if quarter:
-        # Single quarter range — ~5M rows / 4 quarters = ~1.25M per quarter
         expected_min, expected_max = 900_000, 1_800_000
     else:
         expected_min, expected_max = 4_000_000, 6_000_000
@@ -624,19 +574,10 @@ def validate_row_counts(pairs_df, quarter: str = None) -> bool:
     )
 
     if count < expected_min:
-        logger.warning(
-            "row_count_low",
-            rows=count,
-            hint="Possible join error or overly strict filter",
-        )
+        logger.warning("row_count_low", rows=count, hint="Possible join error or overly strict filter")
         return False
-
     if count > expected_max:
-        logger.warning(
-            "row_count_high",
-            rows=count,
-            hint="Possible missing deduplication step",
-        )
+        logger.warning("row_count_high", rows=count, hint="Possible missing deduplication step")
         return False
 
     logger.info("row_count_validation_passed", rows=count)
@@ -647,20 +588,12 @@ def validate_row_counts(pairs_df, quarter: str = None) -> bool:
 # PRR validation checkpoint
 # ---------------------------------------------------------------------------
 
-def run_validation_checkpoint(
-    pg_conn_str: str,
-    table: str = "drug_reaction_pairs",
-) -> bool:
+def run_validation_checkpoint(sf_config: dict, table: str = "drug_reaction_pairs") -> bool:
     """
-    Confirms that gabapentin + cardio-respiratory arrest exists in
-    drug_reaction_pairs after Branch 1 completes.
-
-    Uses a direct psycopg2 COUNT(*) query — far more efficient than
-    loading the entire table into Spark just to count matching rows.
-    Runs in milliseconds on the indexed table.
+    Confirms gabapentin + cardio-respiratory arrest exists in drug_reaction_pairs.
+    Uses direct Snowflake connector COUNT(*) — milliseconds on indexed table.
+    Much faster than loading 1.4M+ rows into Spark to count a subset.
     """
-    import psycopg2
-
     logger.info(
         "validation_checkpoint_start",
         drug=CHECKPOINT_DRUG,
@@ -668,7 +601,7 @@ def run_validation_checkpoint(
         table=table,
     )
 
-    conn = psycopg2.connect(pg_conn_str)
+    conn = get_sf_conn(sf_config)
     cur  = conn.cursor()
     cur.execute(
         f"SELECT COUNT(*) FROM {table} WHERE drug_key = %s AND pt = %s",
@@ -705,47 +638,32 @@ def run_validation_checkpoint(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="MedSignal Spark Branch 1 — FAERS data engineering pipeline.",
+        description="MedSignal Spark Branch 1 — FAERS data engineering pipeline (Snowflake).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  # Single quarter (recommended during development)\n"
-            "  poetry run python pipelines/spark_branch1.py --quarter 2023Q1\n\n"
-            "  # Single quarter with row limit (quick smoke test)\n"
-            "  poetry run python pipelines/spark_branch1.py --quarter 2023Q1 --limit 500000\n\n"
-            "  # Full year (all quarters in Kafka)\n"
-            "  poetry run python pipelines/spark_branch1.py\n"
+            "  poetry run python pipelines/spark_branch1.py --quarter 2023Q1\n"
+            "  poetry run python pipelines/spark_branch1.py --quarter 2023Q1 --limit 500000\n"
+            "  poetry run python pipelines/spark_branch1.py --quarter 2023Q1 --table drug_reaction_pairs_test\n"
         ),
     )
     parser.add_argument(
         "--quarter",
         type=str,
         default=None,
-        help=(
-            "Process a single quarter only (e.g. 2023Q1). "
-            "Filters by source_quarter after JSON parsing. "
-            "Omit when Kafka contains a single quarter already."
-        ),
+        help="Filter to single quarter e.g. 2023Q1. Omit when Kafka has one quarter only.",
     )
     parser.add_argument(
         "--limit",
         type=int,
         default=None,
-        help=(
-            "Limit rows read per Kafka topic (e.g. --limit 500000). "
-            "Use during development to speed up test runs. "
-            "Skips row count validation when set."
-        ),
+        help="Cap rows per Kafka topic for smoke tests. Skips row count validation.",
     )
     parser.add_argument(
         "--table",
         type=str,
         default="drug_reaction_pairs",
-        help=(
-            "Target PostgreSQL table to write to "
-            "(default: drug_reaction_pairs). "
-            "Use --table drug_reaction_pairs_duplicates for testing."
-        ),
+        help="Target Snowflake table (default: drug_reaction_pairs).",
     )
     return parser.parse_args()
 
@@ -756,65 +674,66 @@ def parse_args() -> argparse.Namespace:
 
 def main():
     args = parse_args()
-
-    # ------------------------------------------------------------------
-    # 1. Load environment variables
-    # ------------------------------------------------------------------
     load_dotenv()
 
-    postgres_host = os.getenv("POSTGRES_HOST")
-    postgres_port = os.getenv("POSTGRES_PORT", "5432")
-    postgres_db   = os.getenv("POSTGRES_DB")
-    postgres_user = os.getenv("POSTGRES_USER")
-    postgres_pass = os.getenv("POSTGRES_PASSWORD")
+    # ------------------------------------------------------------------
+    # 1. Load and validate environment variables
+    # ------------------------------------------------------------------
+    sf_account   = os.getenv("SNOWFLAKE_ACCOUNT")
+    sf_user      = os.getenv("SNOWFLAKE_USER")
+    sf_password  = os.getenv("SNOWFLAKE_PASSWORD")
+    sf_database  = os.getenv("SNOWFLAKE_DATABASE")
+    sf_schema    = os.getenv("SNOWFLAKE_SCHEMA", "PUBLIC")
+    sf_warehouse = os.getenv("SNOWFLAKE_WAREHOUSE")
     kafka_servers = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 
-    # Validate required env vars are present
     missing = [
         k for k, v in {
-            "POSTGRES_HOST":     postgres_host,
-            "POSTGRES_DB":       postgres_db,
-            "POSTGRES_USER":     postgres_user,
-            "POSTGRES_PASSWORD": postgres_pass,
+            "SNOWFLAKE_ACCOUNT":   sf_account,
+            "SNOWFLAKE_USER":      sf_user,
+            "SNOWFLAKE_PASSWORD":  sf_password,
+            "SNOWFLAKE_DATABASE":  sf_database,
+            "SNOWFLAKE_WAREHOUSE": sf_warehouse,
         }.items() if not v
     ]
     if missing:
         logger.error("missing_env_vars", vars=missing)
         sys.exit(1)
 
-    # Supabase requires SSL — sslmode=require is mandatory
+    sf_config = {
+        "account":   sf_account,
+        "user":      sf_user,
+        "password":  sf_password,
+        "database":  sf_database,
+        "schema":    sf_schema,
+        "warehouse": sf_warehouse,
+    }
+
+    # Snowflake JDBC URL and props for Spark write
     jdbc_url = (
-        f"jdbc:postgresql://{postgres_host}:{postgres_port}/{postgres_db}"
-        f"?sslmode=require"
+        f"jdbc:snowflake://{sf_account}.snowflakecomputing.com/"
+        f"?db={sf_database}&schema={sf_schema}&warehouse={sf_warehouse}"
     )
     jdbc_props = {
-        "user":     postgres_user,
-        "password": postgres_pass,
-        "driver":   "org.postgresql.Driver",
+        "user":     sf_user,
+        "password": sf_password,
+        "driver":   "net.snowflake.client.jdbc.SnowflakeDriver",
     }
-    pg_conn_str = (
-        f"host={postgres_host} "
-        f"port={postgres_port} "
-        f"dbname={postgres_db} "
-        f"user={postgres_user} "
-        f"password={postgres_pass} "
-        f"sslmode=require"
-    )
 
     logger.info(
         "branch1_start",
         kafka=kafka_servers,
-        postgres_host=postgres_host,
-        postgres_db=postgres_db,
+        snowflake_account=sf_account,
+        snowflake_database=sf_database,
         quarter=args.quarter or "all",
         limit=args.limit or "none",
         table=args.table,
     )
 
     # ------------------------------------------------------------------
-    # 2. Ensure JDBC jar is present
+    # 2. Ensure Snowflake JDBC jar is present
     # ------------------------------------------------------------------
-    jdbc_jar_path = ensure_jdbc_jar()
+    jdbc_jar_path = ensure_snowflake_jdbc_jar()
 
     # ------------------------------------------------------------------
     # 3. Build SparkSession
@@ -828,7 +747,12 @@ def main():
     )
 
     # ------------------------------------------------------------------
-    # 4. Read Kafka topics as static batch dataframes
+    # 4. Load RxNorm cache from Snowflake
+    # ------------------------------------------------------------------
+    cache_df = load_rxnorm_cache(sf_config, spark)
+
+    # ------------------------------------------------------------------
+    # 5. Read Kafka topics as static batch dataframes
     # ------------------------------------------------------------------
     logger.info("reading_kafka_topics", bootstrap_servers=kafka_servers)
 
@@ -838,8 +762,7 @@ def main():
     raw_outc = read_kafka_topic(spark, kafka_servers, "faers_outc", limit=args.limit)
 
     # ------------------------------------------------------------------
-    # 5. Parse JSON — all fields StringType first, cast after
-    #    Quarter filter applied here via source_quarter column
+    # 6. Parse JSON — all fields StringType first, cast after
     # ------------------------------------------------------------------
     logger.info("parsing_json", quarter=args.quarter or "all")
 
@@ -849,33 +772,31 @@ def main():
     outc_df = parse_outc(spark, raw_outc, quarter=args.quarter)
 
     # ------------------------------------------------------------------
-    # 6. DEMO — caseversion deduplication
+    # 7. DEMO — caseversion deduplication
     # ------------------------------------------------------------------
     logger.info("deduplicating_demo")
     demo_deduped = dedup_demo(demo_df)
 
     # ------------------------------------------------------------------
-    # 7. DRUG — PS filter + combination split + RxNorm normalize
-    #    Reads rxnorm_cache from PostgreSQL directly as Spark dataframe
-    #    so rxcui is carried through the join automatically
+    # 8. DRUG — PS filter + combination split + RxNorm normalize
     # ------------------------------------------------------------------
     logger.info("filtering_and_normalizing_drug")
-    drug_normalized = filter_and_normalize_drug(drug_df, pg_conn_str, spark)
+    drug_normalized = filter_and_normalize_drug(drug_df, cache_df, spark)
 
     # ------------------------------------------------------------------
-    # 8. REAC — deduplication
+    # 9. REAC — deduplication
     # ------------------------------------------------------------------
     logger.info("deduplicating_reac")
     reac_deduped = dedup_reac(reac_df)
 
     # ------------------------------------------------------------------
-    # 9. OUTC — aggregate flags
+    # 10. OUTC — aggregate flags
     # ------------------------------------------------------------------
     logger.info("aggregating_outc_flags")
     outc_aggregated = aggregate_outc(outc_df)
 
     # ------------------------------------------------------------------
-    # 10. Four-file join → pair-level dedup
+    # 11. Four-file join → pair-level dedup
     # ------------------------------------------------------------------
     logger.info("joining_four_files")
     pairs_df = build_drug_reaction_pairs(
@@ -885,32 +806,27 @@ def main():
         outc_aggregated,
     )
 
-    # Cache the pairs dataframe — used for both row count validation
-    # and the PostgreSQL write. Without caching Spark recomputes the
-    # entire join pipeline twice.
+    # Cache — used for both row count validation and write
     pairs_df.cache()
 
     # ------------------------------------------------------------------
-    # 11. Row count validation
+    # 12. Row count validation
     # ------------------------------------------------------------------
     if args.limit:
-        logger.info(
-            "row_count_validation_skipped",
-            reason="--limit mode — partial dataset expected",
-        )
+        logger.info("row_count_validation_skipped", reason="--limit mode — partial dataset expected")
     else:
         logger.info("validating_row_counts")
         validate_row_counts(pairs_df, quarter=args.quarter)
 
     # ------------------------------------------------------------------
-    # 12. Write to PostgreSQL
+    # 13. Write to Snowflake
     # ------------------------------------------------------------------
-    write_to_postgres(pairs_df, args.table, jdbc_url, jdbc_props)
+    write_to_snowflake(pairs_df, args.table, jdbc_url, jdbc_props)
 
     # ------------------------------------------------------------------
-    # 13. PRR validation checkpoint
+    # 14. PRR validation checkpoint
     # ------------------------------------------------------------------
-    passed = run_validation_checkpoint(pg_conn_str, table=args.table)
+    passed = run_validation_checkpoint(sf_config, table=args.table)
 
     if not passed:
         logger.error(
@@ -925,7 +841,7 @@ def main():
         "branch1_complete",
         quarter=args.quarter or "all",
         table=args.table,
-        next_step="Run spark_branch2.py to compute PRR signals",
+        next_step="Run branch2_prr.py to compute PRR signals",
     )
 
     spark.stop()
