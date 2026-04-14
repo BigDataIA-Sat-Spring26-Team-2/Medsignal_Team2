@@ -1,7 +1,12 @@
-"""
 
+"""
+rxnorm_service.py
+-----------------
 Builds the RxNorm drug name cache in Supabase.
-Run this ONCE before Spark Branch 1.
+Resolves to base ingredient level (TTY=IN) so salt forms,
+prodrugs, and formulation variants collapse to one canonical name.
+
+Run  : python -m app.services.rxnorm_service
 
 """
 
@@ -9,26 +14,12 @@ import os
 import time
 import glob
 import logging
-from unittest import result
 import requests
 import psycopg2
 import pandas as pd
 from dotenv import load_dotenv
 
 load_dotenv()
-
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-
-PG_URL       = os.getenv("DATABASE_URL")
-RXNORM_BASE  = "https://rxnav.nlm.nih.gov/REST"
-DATA_DIR     = "data/faers"
-SLEEP        = 0.0   # 0.12s between calls = stay under 10 req/s
-
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,61 +28,24 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Step 1 — collect unique drug names from raw FAERS files
-# ---------------------------------------------------------------------------
+RXNORM_BASE = "https://rxnav.nlm.nih.gov/REST"
+DATA_DIR    = "data/faers"
+SLEEP       = 0.12
 
-def get_unique_drug_names() -> list:
-    """
-    Read all DRUG*.txt files from all quarters.
-    Extract unique values from the prod_ai column.
-    prod_ai = active ingredient field — primary normalization target.
-    """
-    names = set()
 
-    files = glob.glob(f"{DATA_DIR}/**/*.txt", recursive=True)
-    drug_files = [f for f in files if "DRUG" in f.upper()]
+def get_conn():
+    return psycopg2.connect(
+        host    =os.getenv("POSTGRES_HOST"),
+        port    =os.getenv("POSTGRES_PORT"),
+        dbname  =os.getenv("POSTGRES_DB"),
+        user    =os.getenv("POSTGRES_USER"),
+        password=os.getenv("POSTGRES_PASSWORD"),
+    )
 
-    log.info("Found %d DRUG files", len(drug_files))
 
-    for filepath in drug_files:
-        df = pd.read_csv(
-            filepath,
-            sep="$",
-            encoding="latin1",
-            usecols=["prod_ai"],   # only read this one column
-            dtype=str,
-            low_memory=False,
-        )
-        before = len(names)
-        names.update(
-            df["prod_ai"]
-            .dropna()
-            .str.upper()
-            .str.strip()
-        )
-        log.info("  %s → +%d names (total: %d)", filepath, len(names) - before, len(names))
-
-    log.info("Total unique drug names: %d", len(names))
-    return list(names)
-
-# ---------------------------------------------------------------------------
-# Step 2 — call NIH RxNorm API for one drug name
-# ---------------------------------------------------------------------------
-
-def resolve_one(drug_name: str) -> dict:
-    """
-    Call RxNorm REST API to get canonical name + RxCUI for one drug.
-
-    Flow:
-        1. POST drug name → get RxCUI back
-        2. If RxCUI found → get canonical name from RxCUI
-        3. If nothing found → use the raw name as fallback
-
-    No API key needed for RxNorm.
-    """
+def get_rxcui(drug_name: str) -> str | None:
+    """Call 1 — resolve drug name to RxCUI."""
     try:
-        # Step A — get RxCUI from drug name
         r = requests.get(
             f"{RXNORM_BASE}/rxcui.json",
             params={"name": drug_name, "search": 1},
@@ -99,14 +53,62 @@ def resolve_one(drug_name: str) -> dict:
         )
         r.raise_for_status()
         ids = r.json().get("idGroup", {}).get("rxnormId", [])
+        return ids[0] if ids else None
+    except Exception as e:
+        log.warning("rxcui_failed drug=%s error=%s", drug_name, e)
+        return None
 
-        if not ids:
-            # No match found — use raw name as canonical
-            return {"rxcui": None, "canonical": drug_name}
 
-        rxcui = ids[0]
+def get_base_ingredient(rxcui: str) -> tuple:
+    """
+    Call 2 — resolve RxCUI to base ingredient (TTY=IN).
 
-        # Step B — get canonical name from RxCUI
+    Collapses:
+        bupropion hydrochloride   → bupropion
+        dapagliflozin propanediol → dapagliflozin
+        gabapentin enacarbil      → gabapentin
+    """
+    try:
+        r = requests.get(
+            f"{RXNORM_BASE}/rxcui/{rxcui}/related.json",
+            params={"tty": "IN"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        groups = r.json().get("relatedGroup", {}).get("conceptGroup", [])
+        for group in groups:
+            if group.get("tty") == "IN":
+                props = group.get("conceptProperties", [])
+                if props:
+                    return props[0].get("rxcui"), props[0].get("name")
+        return None, None
+    except Exception as e:
+        log.warning("base_ingredient_failed rxcui=%s error=%s", rxcui, e)
+        return None, None
+
+
+def resolve_one(drug_name: str) -> dict:
+    """
+    Full resolution for one drug name — two API calls:
+        1. Name → RxCUI
+        2. RxCUI → base ingredient (TTY=IN)
+
+    Fallback at each step if API fails or returns nothing.
+    """
+    rxcui = get_rxcui(drug_name)
+    time.sleep(SLEEP)
+
+    if not rxcui:
+        return {"rxcui": None, "canonical": drug_name.lower()}
+
+    base_rxcui, base_name = get_base_ingredient(rxcui)
+    time.sleep(SLEEP)
+
+    if base_name:
+        return {"rxcui": base_rxcui, "canonical": base_name.lower()}
+
+    # RxCUI found but no base ingredient — get canonical name from RxCUI
+    try:
         nr = requests.get(
             f"{RXNORM_BASE}/rxcui/{rxcui}/property.json",
             params={"propName": "RxNorm Name"},
@@ -119,124 +121,114 @@ def resolve_one(drug_name: str) -> dict:
             .get("propConcept", [])
         )
         canonical = concepts[0].get("propValue", drug_name) if concepts else drug_name
+        return {"rxcui": rxcui, "canonical": canonical.lower()}
+    except Exception:
+        return {"rxcui": rxcui, "canonical": drug_name.lower()}
 
-        return {"rxcui": rxcui, "canonical": canonical}
 
-    except Exception as e:
-        # If API call fails for any reason — fallback to raw name
-        log.warning("RxNorm lookup failed for '%s': %s", drug_name, e)
-        return {"rxcui": None, "canonical": drug_name}
+def get_unique_drug_names() -> list:
+    names = set()
+    files = glob.glob(f"{DATA_DIR}/**/*.txt", recursive=True)
+    drug_files = [f for f in files if "DRUG" in f.upper()]
+    log.info("Found %d DRUG files", len(drug_files))
 
-# ---------------------------------------------------------------------------
-# Step 3 — store results in Supabase rxnorm_cache table
-# ---------------------------------------------------------------------------
+    for filepath in drug_files:
+        df = pd.read_csv(
+            filepath, sep="$", encoding="latin1",
+            usecols=["prod_ai"], dtype=str, low_memory=False,
+        )
+        before = len(names)
+        names.update(df["prod_ai"].dropna().str.upper().str.strip())
+        log.info("  %s → +%d names (total: %d)",
+                 filepath, len(names) - before, len(names))
+
+    log.info("Total unique drug names: %d", len(names))
+    return list(names)
+
 
 def build_cache(drug_names: list):
-    """
-    For each drug name:
-        - Call RxNorm API
-        - Insert result into rxnorm_cache
-        - ON CONFLICT DO NOTHING = safe to re-run anytime
-
-    Progress is logged every 100 names.
-    """
-    conn = psycopg2.connect(
-    host=os.getenv("POSTGRES_HOST"),
-    port=os.getenv("POSTGRES_PORT"),
-    dbname=os.getenv("POSTGRES_DB"),
-    user=os.getenv("POSTGRES_USER"),
-    password=os.getenv("POSTGRES_PASSWORD"),  
-)
+    conn = get_conn()
     cur  = conn.cursor()
-
-    total   = len(drug_names)
-    success = 0
-    failed  = 0
+    total = len(drug_names)
 
     for i, name in enumerate(drug_names, 1):
         result = resolve_one(name)
-        name_safe      = name[:1000] if name else name
-        canonical_safe = result["canonical"][:1000] if result["canonical"] else result["canonical"]
+
+        name_safe  = name[:1000]                         if name                    else name
+        canon_safe = result["canonical"][:1000]          if result["canonical"]     else result["canonical"]
 
         cur.execute(
             """
             INSERT INTO rxnorm_cache (prod_ai, rxcui, canonical_name)
             VALUES (%s, %s, %s)
-            ON CONFLICT (prod_ai) DO NOTHING
+            ON CONFLICT (prod_ai) DO UPDATE
+                SET rxcui          = EXCLUDED.rxcui,
+                    canonical_name = EXCLUDED.canonical_name
             """,
-            (name, result["rxcui"], result["canonical"]),
+            (name_safe, result["rxcui"], canon_safe),
         )
-
-        success += 1
 
         if i % 100 == 0:
             conn.commit()
             log.info("Progress: %d / %d (%.0f%%)", i, total, i / total * 100)
 
-        time.sleep(SLEEP)   # rate limit — stay under 10 req/s
-
     conn.commit()
     cur.close()
     conn.close()
+    log.info("Cache built: %d names resolved", total)
 
-    log.info("Cache built: %d resolved, %d failed", success, failed)
-
-# ---------------------------------------------------------------------------
-# Validation — run after build_cache to confirm it worked
-# ---------------------------------------------------------------------------
 
 def validate_cache():
-    """
-    Quick sanity check after building.
-    Confirms key drugs are resolved correctly.
-    """
-    conn = psycopg2.connect(
-    host=os.getenv("POSTGRES_HOST"),
-    port=os.getenv("POSTGRES_PORT"),
-    dbname=os.getenv("POSTGRES_DB"),
-    user=os.getenv("POSTGRES_USER"),
-    password=os.getenv("POSTGRES_PASSWORD"),  
-    )
+    conn = get_conn()
     cur  = conn.cursor()
 
     cur.execute("SELECT COUNT(*) FROM rxnorm_cache")
-    total = cur.fetchone()[0]
-    log.info("Total rows in rxnorm_cache: %d", total)
+    log.info("Total rows in rxnorm_cache: %d", cur.fetchone()[0])
 
-    # Check a known drug resolves correctly
-    cur.execute(
-    "SELECT prod_ai, canonical_name FROM rxnorm_cache WHERE prod_ai ILIKE '%finasteride%' LIMIT 3"
-)
-    for raw, canonical in rows:
-        log.info("  %s → %s", raw, canonical)
+    # Confirm salt forms collapsed to base ingredient
+    test_cases = [
+        ("BUPROPION HYDROCHLORIDE",   "bupropion"),
+        ("DAPAGLIFLOZIN PROPANEDIOL", "dapagliflozin"),
+        ("GABAPENTIN ENACARBIL",      "gabapentin"),
+        ("FINASTERIDE",               "finasteride"),
+        ("DUPILUMAB",                 "dupilumab"),
+    ]
+
+    all_pass = True
+    for raw, expected in test_cases:
+        cur.execute(
+            "SELECT canonical_name FROM rxnorm_cache WHERE prod_ai = %s", (raw,)
+        )
+        row = cur.fetchone()
+        actual = row[0] if row else "NOT FOUND"
+        if row and expected in actual.lower():
+            log.info("  PASS  %s → %s", raw, actual)
+        else:
+            log.warning("  FAIL  %s → %s (expected: %s)", raw, actual, expected)
+            all_pass = False
 
     cur.close()
     conn.close()
+    return all_pass
 
-    assert total > 0, "Cache is empty — something went wrong"
-    log.info("Validation passed")
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    log.info("=" * 50)
-    log.info("MedSignal — RxNorm Cache Builder")
-    log.info("=" * 50)
+    log.info("=" * 55)
+    log.info("MedSignal — RxNorm Cache Builder (base ingredient level)")
+    log.info("=" * 55)
 
-    # Step 1
-    log.info("Step 1: Collecting unique drug names from FAERS files...")
     names = get_unique_drug_names()
+    log.info(
+        "Estimated time: %d names × 2 calls × 0.12s = %.0f minutes",
+        len(names), len(names) * 2 * SLEEP / 60
+    )
 
-    # Step 2 + 3
-    log.info("Step 2+3: Resolving via RxNorm API and storing in Supabase...")
-    log.info("Estimated time: %d names × 0.12s = %.0f minutes",
-             len(names), len(names) * 0.12 / 60)
     build_cache(names)
 
-    # Validate
-    log.info("Validating cache...")
-    validate_cache()
+    passed = validate_cache()
+    if passed:
+        log.info("All validation checks passed.")
+    else:
+        log.warning("Some drugs did not resolve correctly — check cache before running Branch 1.")
 
-    log.info("Done. Samiksha can now run Spark Branch 1.")
+    log.info("Done. Truncate rxnorm_cache first if rebuilding from scratch.")
