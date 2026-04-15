@@ -19,7 +19,7 @@ import os
 from datetime import datetime, timezone
 from typing import List, Literal, Optional
 
-import snowflake.connector
+
 from dotenv import load_dotenv
 from openai import OpenAI
 from pydantic import BaseModel, Field, ValidationError
