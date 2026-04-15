@@ -48,7 +48,12 @@ services:
        kafka-topics --create --if-not-exists --bootstrap-server kafka:29092 --topic faers_outc --partitions 4 --replication-factor 1 &&
        echo All topics created successfully"
     restart: "no"
-
+  redis:
+  image: redis:7-alpine
+  container_name: medsignal-redis
+  ports:
+    - "6379:6379"
+  command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
   chromadb:
     image: chromadb/chroma:latest
     container_name: medsignal-chromadb
