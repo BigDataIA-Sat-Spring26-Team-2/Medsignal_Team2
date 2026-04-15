@@ -6,10 +6,18 @@ No agent modifies another agent's fields.
 
 Field ownership:
     Input (from signals_flagged) : drug_key, pt, prr, case_count,
-                                   death_count, hosp_count, lt_count
-    Agent 1 adds                 : stat_score, search_queries
+                                   death_count, hosp_count, lt_count,
+                                   stat_score
+    Agent 1 adds                 : search_queries
     Agent 2 adds                 : abstracts, lit_score
     Agent 3 adds                 : priority, brief
+
+Note on stat_score:
+    StatScore is computed deterministically in Branch 2 (branch2_prr.py)
+    from PRR, case_count, and outcome flags. It is written to
+    signals_flagged and loaded into state by pipeline.py before the
+    agent pipeline runs. Agent 1 does NOT recompute it — it reads
+    stat_score from state and passes it through unchanged.
 """
 
 from typing import TypedDict, List, Optional
@@ -36,7 +44,7 @@ class SignalState(TypedDict):
 
     Populated in stages:
         Stage 0 — loaded from signals_flagged before pipeline runs
-        Stage 1 — Agent 1 (Signal Detector) fills stat_score + search_queries
+        Stage 1 — Agent 1 (Signal Detector) fills search_queries
         Stage 2 — Agent 2 (Literature Retriever) fills abstracts + lit_score
         Stage 3 — Agent 3 (Assessor) fills priority + brief
     """
@@ -49,9 +57,10 @@ class SignalState(TypedDict):
     death_count: int    # cases with death outcome flag
     hosp_count : int    # cases with hospitalisation outcome flag
     lt_count   : int    # cases with life-threatening outcome flag
+    stat_score : float  # StatScore ∈ [0, 1] — computed by Branch 2,
+                        # not recomputed by Agent 1
 
     # ── Stage 1: Agent 1 output ──────────────────────────────────────────
-    stat_score    : Optional[float]      # StatScore ∈ [0, 1]
     search_queries: Optional[List[str]]  # 3 GPT-4o generated PubMed queries
 
     # ── Stage 2: Agent 2 output ──────────────────────────────────────────
