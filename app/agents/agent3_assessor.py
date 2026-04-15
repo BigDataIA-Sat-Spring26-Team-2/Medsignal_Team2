@@ -29,12 +29,19 @@ load_dotenv()
 
 log    = logging.getLogger(__name__)
 client = OpenAI()
-MODEL  = "gpt-4o"
+
+# Use gpt-4o-mini during development — switch to gpt-4o for the final
+# evaluation run by setting OPENAI_MODEL=gpt-4o in .env.
+MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+# Valid recommended_action values — used for normalization before Pydantic.
+_VALID_ACTIONS = {"MONITOR", "LABEL_UPDATE", "RESTRICT", "WITHDRAW"}
 
 
 # ── Pydantic schema ───────────────────────────────────────────────────────────
 # Every GPT-4o response is validated against this before being written.
-# ValidationError on attempt 1 → retry. On attempt 2 → generation_error.
+# recommended_action is str here — _normalize_action() maps GPT-4o prose
+# to one of the four valid values before this schema runs.
 
 class SafetyBriefOutput(BaseModel):
     brief_text        : str
@@ -63,8 +70,7 @@ def _get_conn() -> snowflake.connector.SnowflakeConnection:
 
 
 # ── Priority tier ─────────────────────────────────────────────────────────────
-# Proposal p28. StatScore and LitScore are never combined —
-# each threshold is evaluated independently.
+# Proposal p28. StatScore and LitScore evaluated independently — never combined.
 
 def assign_priority(stat_score: float, lit_score: float) -> str:
     if stat_score >= 0.7 and lit_score >= 0.5:
@@ -77,8 +83,8 @@ def assign_priority(stat_score: float, lit_score: float) -> str:
 
 
 # ── StatScore fallback ────────────────────────────────────────────────────────
-# Used when Agent 1 has not run yet (still mocked in pipeline).
-# Identical formula to Branch 2 compute_stat_score so values are consistent.
+# Only called when Agent 1 has not populated stat_score in state.
+# Uses the same formula as Branch 2 so values are consistent.
 
 def _compute_stat_score(
     prr: float, case_count: int,
@@ -90,9 +96,41 @@ def _compute_stat_score(
     return round(prr_s * 0.50 + vol_s * 0.30 + sev_s * 0.20, 4)
 
 
+# ── Action normalization ──────────────────────────────────────────────────────
+# GPT-4o sometimes returns prose like "Escalate for pharmacovigilance review"
+# instead of one of the four exact Literal values. This maps common variants
+# to valid values before Pydantic validation runs, preventing generation_error
+# on every signal.
+
+def _normalize_action(raw: dict) -> dict:
+    action = str(raw.get("recommended_action", "")).upper().strip()
+
+    if action in _VALID_ACTIONS:
+        return raw
+
+    if "WITHDRAW" in action or "REMOVE" in action:
+        normalized = "WITHDRAW"
+    elif "RESTRICT" in action or "LIMIT" in action:
+        normalized = "RESTRICT"
+    elif "LABEL" in action or "UPDATE" in action or "REVISE" in action:
+        normalized = "LABEL_UPDATE"
+    else:
+        # Default to MONITOR — least disruptive safe fallback.
+        # Logged as warning so the reviewer knows normalization happened.
+        normalized = "MONITOR"
+        log.warning(
+            "recommended_action '%s' did not match any known value — "
+            "defaulting to MONITOR",
+            action,
+        )
+
+    raw["recommended_action"] = normalized
+    return raw
+
+
 # ── Citation guard ────────────────────────────────────────────────────────────
-# GPT-4o sometimes cites PMIDs it was not given.
-# Strip anything not in the set Agent 2 actually retrieved.
+# Every PMID in pmids_cited must appear in the set Agent 2 actually retrieved.
+# Anything else is a hallucination — strip it before writing to Snowflake.
 
 def _validate_citations(
     brief: SafetyBriefOutput,
@@ -114,13 +152,11 @@ def _validate_citations(
 # ── Prompt construction ───────────────────────────────────────────────────────
 
 def _format_abstracts(abstracts: list) -> str:
-    """Format Agent 2's retrieved abstracts for inclusion in the GPT-4o prompt."""
     if not abstracts:
         return "No abstracts retrieved above similarity threshold."
 
     lines = []
     for i, a in enumerate(abstracts, 1):
-        # Agent 2 stores similarity as 1 - cosine_distance (higher = more relevant)
         lines.append(
             f"[{i}] PMID:{a['pmid']} | similarity={a['similarity']:.3f}\n"
             f"{a['text'][:600]}"
@@ -128,7 +164,7 @@ def _format_abstracts(abstracts: list) -> str:
     return "\n\n".join(lines)
 
 
-def _build_prompt(state: SignalState, priority: str) -> str:
+def _build_prompt(state: dict, priority: str) -> str:
     return f"""Drug: {state["drug_key"]}
 Reaction (MedDRA PT): {state["pt"]}
 PRR: {state["prr"]:.2f} | Cases: {state["case_count"]}
@@ -154,12 +190,11 @@ Return ONLY a JSON object. No markdown, no explanation, no extra text.
 }}"""
 
 
-def _build_retry_prompt(state: SignalState, priority: str, error: str) -> str:
-    """Retry prompt includes the exact Pydantic error so GPT-4o knows what to fix."""
+def _build_retry_prompt(state: dict, priority: str, error: str) -> str:
     return f"""Your previous response failed schema validation with this error:
 {error}
 
-Allowed values for recommended_action: MONITOR, LABEL_UPDATE, RESTRICT, WITHDRAW
+recommended_action must be exactly one of: MONITOR, LABEL_UPDATE, RESTRICT, WITHDRAW
 pmids_cited must only contain PMIDs from the abstracts provided below.
 key_findings must be a non-empty list of strings.
 stat_score and lit_score must be floats between 0.0 and 1.0.
@@ -184,14 +219,15 @@ def _call_gpt4o(prompt: str) -> tuple[dict, int, int]:
             },
             {"role": "user", "content": prompt},
         ],
-        temperature=0.2,
+        temperature=0,
     )
 
     raw        = response.choices[0].message.content.strip()
     input_tok  = response.usage.prompt_tokens
     output_tok = response.usage.completion_tokens
 
-    # GPT-4o occasionally wraps JSON in ```json``` blocks despite instructions.
+    # Strip markdown fences — GPT-4o occasionally wraps JSON in ```json```
+    # blocks despite explicit instructions not to.
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"):
@@ -211,7 +247,7 @@ def _call_gpt4o(prompt: str) -> tuple[dict, int, int]:
 # the JSON string into Snowflake's native semi-structured type.
 
 def _write_to_snowflake(
-    state     : SignalState,
+    state     : dict,
     priority  : str,
     brief     : Optional[SafetyBriefOutput],
     input_tok : int,
@@ -262,10 +298,10 @@ def _write_to_snowflake(
             model_used, input_tokens, output_tokens,
             generation_error, generated_at
         ) VALUES (
-            source.drug_key,    source.pt,         source.stat_score,
-            source.lit_score,   source.priority,   source.brief_text,
+            source.drug_key,     source.pt,          source.stat_score,
+            source.lit_score,    source.priority,    source.brief_text,
             source.key_findings, source.pmids_cited, source.recommended_action,
-            source.model_used,  source.input_tokens, source.output_tokens,
+            source.model_used,   source.input_tokens, source.output_tokens,
             source.generation_error, source.generated_at
         )
         """,
@@ -275,10 +311,10 @@ def _write_to_snowflake(
             state.get("stat_score"),
             state.get("lit_score"),
             priority,
-            brief.brief_text                       if brief else None,
-            json.dumps(brief.key_findings)         if brief else json.dumps([]),
-            json.dumps(brief.pmids_cited)          if brief else json.dumps([]),
-            brief.recommended_action               if brief else None,
+            brief.brief_text               if brief else None,
+            json.dumps(brief.key_findings) if brief else json.dumps([]),
+            json.dumps(brief.pmids_cited)  if brief else json.dumps([]),
+            brief.recommended_action       if brief else None,
             MODEL,
             input_tok,
             output_tok,
@@ -303,33 +339,39 @@ def agent3_node(state: SignalState) -> dict:
     """
     LangGraph node for Agent 3.
 
-    stat_score comes from Agent 1. If Agent 1 is still mocked and has not
-    put a value in state, we compute it here from the raw signal columns
-    using the same formula as Branch 2 so values are consistent end to end.
+    Reads stat_score from state (set by Agent 1). If Agent 1 has not run,
+    logs a warning and computes stat_score locally as a fallback so the
+    pipeline continues rather than producing a misleading 0.0 score.
 
-    Returns a dict of new state fields — LangGraph merges this into
-    the existing state automatically.
+    Returns new state fields only — LangGraph merges them automatically.
     """
     drug_key = state["drug_key"]
     pt       = state["pt"]
 
-    # Resolve stat_score — Agent 1's value takes precedence
+    # Agent 1 sets stat_score. Log a warning if it is missing so integration
+    # failures are visible in logs rather than silently producing wrong output.
     stat_score = state.get("stat_score")
     if stat_score is None:
+        log.warning(
+            "stat_score missing for %s x %s — Agent 1 may not have run. "
+            "Computing locally as fallback.",
+            drug_key, pt,
+        )
         stat_score = _compute_stat_score(
             state["prr"], state["case_count"],
             state["death_count"], state["lt_count"], state["hosp_count"],
-        )
-        log.info(
-            "stat_score not in state for %s x %s — computed locally: %.4f",
-            drug_key, pt, stat_score,
         )
 
     lit_score = state.get("lit_score") or 0.0
     abstracts = state.get("abstracts") or []
 
-    # Write resolved scores back into state so prompt and Pydantic see same values
-    state = {**state, "stat_score": stat_score, "lit_score": lit_score}
+    # Use local variables so state is not mutated inside the node.
+    # LangGraph merges the return dict into state after the node completes.
+    resolved_state = {
+        **state,
+        "stat_score": stat_score,
+        "lit_score" : lit_score,
+    }
 
     log.info(
         "agent3_start — %s x %s | stat=%.4f | lit=%.4f | abstracts=%d",
@@ -347,19 +389,25 @@ def agent3_node(state: SignalState) -> dict:
     for attempt in range(2):
         try:
             if attempt == 0:
-                prompt = _build_prompt(state, priority)
+                prompt = _build_prompt(resolved_state, priority)
             else:
                 log.warning(
                     "Attempt 1 failed for %s x %s — retrying with error context",
                     drug_key, pt,
                 )
-                prompt = _build_retry_prompt(state, priority, last_error)
+                prompt = _build_retry_prompt(resolved_state, priority, last_error)
 
             raw, i_tok, o_tok = _call_gpt4o(prompt)
             input_tok  += i_tok
             output_tok += o_tok
 
-            # Enforce fields GPT-4o must not change — overwrite before validation
+            # Normalize recommended_action before Pydantic sees it.
+            # GPT-4o often returns prose variants that do not exactly match
+            # the four Literal values — this prevents generation_error on
+            # every signal due to a trivial formatting difference.
+            raw = _normalize_action(raw)
+
+            # Overwrite fields GPT-4o must not control.
             raw["drug_key"]     = drug_key
             raw["pt"]           = pt
             raw["stat_score"]   = stat_score
@@ -390,12 +438,14 @@ def agent3_node(state: SignalState) -> dict:
                 brief     = None
 
     _write_to_snowflake(
-        state, priority, brief,
+        resolved_state, priority, brief,
         input_tok, output_tok, gen_error,
     )
 
     return {
-        "priority": priority,
-        "brief"   : brief.model_dump() if brief else None,
-        "error"   : last_error if gen_error else None,
+        "priority"  : priority,
+        "brief"     : brief.model_dump() if brief else None,
+        "stat_score": stat_score,
+        "lit_score" : lit_score,
+        "error"     : last_error if gen_error else None,
     }
