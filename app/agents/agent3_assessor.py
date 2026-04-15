@@ -1,10 +1,11 @@
 """
 agent3_assessor.py — Agent 3: Priority Tier Assignment + SafetyBrief Generation
 
-Receives state populated by Agent 1 (stat_score) and Agent 2 (abstracts, lit_score).
-Assigns a P1-P4 priority tier, calls GPT-4o to synthesise a SafetyBrief,
-validates output with Pydantic, strips fabricated PMIDs, and writes to Snowflake.
+Receives state from the pipeline. stat_score is computed by Branch 2 and
+stored in signals_flagged — Agent 1 reads it from there and passes it through
+state. abstracts and lit_score come from Agent 2.
 
+The local _compute_stat_score() fallback only fires if Agent 1 has not run.
 Retry logic: one retry on Pydantic failure with the validation error in prompt.
 On second failure: writes generation_error=True so HITL still sees the signal.
 
@@ -56,17 +57,6 @@ class SafetyBriefOutput(BaseModel):
     generated_at      : str
 
 
-# ── Snowflake ─────────────────────────────────────────────────────────────────
-
-def _get_conn() -> snowflake.connector.SnowflakeConnection:
-    return snowflake.connector.connect(
-        account  =os.getenv("SNOWFLAKE_ACCOUNT"),
-        user     =os.getenv("SNOWFLAKE_USER"),
-        password =os.getenv("SNOWFLAKE_PASSWORD"),
-        database =os.getenv("SNOWFLAKE_DATABASE"),
-        schema   =os.getenv("SNOWFLAKE_SCHEMA", "PUBLIC"),
-        warehouse=os.getenv("SNOWFLAKE_WAREHOUSE"),
-    )
 
 
 # ── Priority tier ─────────────────────────────────────────────────────────────
