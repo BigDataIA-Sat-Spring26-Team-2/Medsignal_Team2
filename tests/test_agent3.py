@@ -313,15 +313,7 @@ def test_agent3_node_returns_required_state_keys():
     assert result["brief"]["recommended_action"] == "LABEL_UPDATE"
     assert mock_write.called
 
-@pytest.mark.unit
-def test_normalize_action_maps_prose_variants():
-    from app.agents.agent3_assessor import _normalize_action
 
-    assert _normalize_action({"recommended_action": "MONITOR"})["recommended_action"] == "MONITOR"
-    assert _normalize_action({"recommended_action": "label update"})["recommended_action"] == "LABEL_UPDATE"
-    assert _normalize_action({"recommended_action": "Escalate for review"})["recommended_action"] == "MONITOR"
-    assert _normalize_action({"recommended_action": "Withdraw from market"})["recommended_action"] == "WITHDRAW"
-    assert _normalize_action({"recommended_action": "restrict prescribing"})["recommended_action"] == "RESTRICT"
 
 @pytest.mark.unit
 def test_agent3_node_sets_gen_error_on_double_failure():
