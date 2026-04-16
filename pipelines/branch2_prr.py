@@ -309,3 +309,6 @@ if __name__ == "__main__":
         )
 
     write_signals(signals)
+    from app.utils.redis_client import invalidate_signals
+    invalidate_signals()
+    log.info("Redis signal cache cleared after Branch 2 run")
