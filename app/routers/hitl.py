@@ -14,3 +14,16 @@ Design:
     queue depth is written to Redis after every POST so Prometheus
     reads the updated value without hitting Snowflake every 15 seconds.
 """
+
+import logging
+from datetime import datetime, timezone
+from typing import Optional
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+
+from app.utils.snowflake_client import get_conn
+from app.utils.redis_client import set_queue_depth
+
+log    = logging.getLogger(__name__)
+router = APIRouter(prefix="/hitl", tags=["hitl"])
