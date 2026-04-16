@@ -27,3 +27,38 @@ from app.utils.redis_client import set_queue_depth
 
 log    = logging.getLogger(__name__)
 router = APIRouter(prefix="/hitl", tags=["hitl"])
+
+# ── Request schema ────────────────────────────────────────────────────────────
+
+class HITLDecision(BaseModel):
+    drug_key     : str
+    pt           : str
+    decision     : str   # APPROVE / REJECT / ESCALATE
+    reviewer_note: Optional[str] = None
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _get_pending_count() -> int:
+    """
+    Count signals in safety_briefs that have no decision yet.
+    Used to update Redis queue depth after every HITL write.
+    """
+    conn = get_conn()
+    cur  = conn.cursor()
+    cur.execute(
+        """
+        SELECT COUNT(*)
+        FROM   safety_briefs sb
+        WHERE  sb.generation_error = FALSE
+        AND    NOT EXISTS (
+            SELECT 1 FROM hitl_decisions hd
+            WHERE  hd.drug_key = sb.drug_key
+            AND    hd.pt       = sb.pt
+        )
+        """
+    )
+    count = cur.fetchone()[0]
+    cur.close()
+    conn.close()
+    return count
