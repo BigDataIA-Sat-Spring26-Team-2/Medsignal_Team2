@@ -9,7 +9,6 @@ The local _compute_stat_score() fallback only fires if Agent 1 has not run.
 Retry logic: one retry on Pydantic failure with the validation error in prompt.
 On second failure: writes generation_error=True so HITL still sees the signal.
 
-Owner: Siddharth
 """
 
 import json
