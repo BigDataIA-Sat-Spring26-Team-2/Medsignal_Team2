@@ -62,3 +62,63 @@ def _get_pending_count() -> int:
     cur.close()
     conn.close()
     return count
+
+# ── Endpoints ─────────────────────────────────────────────────────────────────
+
+@router.get("/queue")
+def get_queue():
+    """
+    Returns all signals awaiting HITL review.
+
+    Joins safety_briefs with signals_flagged for full signal context.
+    Excludes signals that already have a decision in hitl_decisions.
+    Sorted by priority tier (P1 first) then stat_score descending.
+    """
+    conn = get_conn()
+    cur  = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT
+            sb.drug_key,
+            sb.pt,
+            sb.priority,
+            sb.stat_score,
+            sb.lit_score,
+            sb.recommended_action,
+            sb.brief_text,
+            sb.generation_error,
+            sf.prr,
+            sf.drug_reaction_count  AS case_count,
+            sf.death_count,
+            sf.hosp_count,
+            sf.lt_count,
+            sb.generated_at
+        FROM   safety_briefs sb
+        JOIN   signals_flagged sf
+               ON sb.drug_key = sf.drug_key
+               AND sb.pt      = sf.pt
+        WHERE  sb.generation_error = FALSE
+        AND    NOT EXISTS (
+            SELECT 1 FROM hitl_decisions hd
+            WHERE  hd.drug_key = sb.drug_key
+            AND    hd.pt       = sb.pt
+        )
+        ORDER BY
+            CASE sb.priority
+                WHEN 'P1' THEN 1
+                WHEN 'P2' THEN 2
+                WHEN 'P3' THEN 3
+                WHEN 'P4' THEN 4
+                ELSE 5
+            END,
+            sb.stat_score DESC NULLS LAST
+        """
+    )
+
+    rows    = cur.fetchall()
+    columns = [desc[0].lower() for desc in cur.description]
+    cur.close()
+    conn.close()
+
+    return [dict(zip(columns, row)) for row in rows]
