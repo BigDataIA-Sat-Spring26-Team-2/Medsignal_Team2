@@ -2,11 +2,14 @@
 agent1_detector.py — MedSignal Agent 1: Signal Detector
 
 Role in pipeline:
-    Reads a flagged signal from state (loaded from signals_flagged by pipeline.py).
-    Reads stat_score from state — already computed by Branch 2, not recomputed here.
+    Receives a flagged signal from state (loaded from signals_flagged by pipeline.py).
+    stat_score is already in state — computed by Branch 2 and stored in
+    signals_flagged. pipeline.py loads it into state at Stage 0.
+    Agent 1 does not recompute it.
+
     Calls GPT-4o to generate 3 PubMed search queries for the signal.
-    Falls back to templates if GPT-4o fails or returns malformed JSON.
-    Passes search_queries to Agent 2 for ChromaDB hybrid retrieval.
+    Falls back to angle-specific template queries if GPT-4o fails.
+    Writes search_queries to state for Agent 2.
 
 Why GPT-4o for query generation:
     Template queries are too generic — same structure regardless of drug class.
@@ -14,7 +17,7 @@ Why GPT-4o for query generation:
     that makes ChromaDB retrieval significantly more effective.
 
     Example: dupilumab + conjunctivitis
-        Template:  "dupilumab conjunctivitis adverse effects"  (generic)
+        Template:  "dupilumab conjunctivitis adverse drug reaction"  (generic)
         GPT-4o:    "dupilumab conjunctivitis ocular adverse effects mechanism"
                    "dupilumab eye inflammation incidence epidemiology"
                    "dupilumab conjunctivitis clinical outcomes risk factors"
@@ -24,15 +27,13 @@ Why GPT-4o for query generation:
         Query 2 — epidemiological (how common is it?)
         Query 3 — clinical outcomes (how serious is it?)
 
-Why no LLM for StatScore:
-    StatScore is a deterministic formula computed in Branch 2 from FAERS-derived
-    features. It does not require language understanding. Agent 1 reads it
-    from state and passes it through unchanged.
-
 GPT-4o config:
-    temperature=0  — reproducible outputs across runs
-    max_tokens=200 — only needs 3 short queries, ~80 tokens response
-    model=gpt-4o   — final demo; use gpt-4o-mini during development
+    temperature=0      — reproducible outputs across runs
+    max_tokens=200     — only needs 3 short queries, ~80 tokens response
+    default model      — gpt-4o-mini (development and testing)
+                         Set OPENAI_MODEL=gpt-4o in .env for production.
+                         With 10 signals and multiple debug runs, gpt-4o-mini
+                         stays well under the $10 hard limit.
 """
 
 import json
@@ -51,7 +52,9 @@ log = logging.getLogger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4o")
+# Default is gpt-4o-mini — cost-effective for development and debugging.
+# Set OPENAI_MODEL=gpt-4o in .env only for production.
+MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 # Temperature 0 for reproducibility — same signal always produces same queries
 TEMPERATURE = 0
@@ -62,9 +65,8 @@ MAX_TOKENS = 200
 # Number of search queries to generate per signal
 NUM_QUERIES = 3
 
-# System prompt — instructs GPT-4o to act as a pharmacovigilance expert
-# and generate queries covering three angles: mechanistic, epidemiological,
-# and clinical outcomes.
+# System prompt — instructs GPT-4o to generate queries covering three angles:
+# mechanistic, epidemiological, and clinical outcomes.
 SYSTEM_PROMPT = """You are a pharmacovigilance expert. Given a drug name and adverse \
 reaction, generate exactly 3 PubMed search queries that would retrieve the most \
 relevant clinical and safety literature.
@@ -110,17 +112,21 @@ def _get_client() -> OpenAI:
 
 def _template_queries(drug_key: str, pt: str) -> list[str]:
     """
-    Deterministic fallback queries used when GPT-4o fails or returns
+    Angle-specific fallback queries used when GPT-4o fails or returns
     malformed JSON.
 
+    Each query covers a different retrieval angle — mechanistic,
+    epidemiological, and clinical outcomes — mirroring the GPT-4o
+    instruction structure so Agent 2 gets diverse retrieval coverage
+    even without a live API call.
+
     Always returns exactly 3 queries so Agent 2 always has something
-    to query ChromaDB with — even if the signal is not in ChromaDB,
-    returning empty abstracts is handled gracefully by Agent 2.
+    to query ChromaDB with.
     """
     return [
-        f"{drug_key} {pt} adverse effects safety",
-        f"{drug_key} {pt} mechanism clinical",
-        f"{drug_key} {pt} risk factors outcomes",
+        f"{drug_key} {pt} adverse drug reaction mechanism pharmacology",
+        f"{drug_key} {pt} incidence epidemiology clinical trial safety",
+        f"{drug_key} {pt} outcomes hospitalisation mortality risk factors",
     ]
 
 
@@ -147,7 +153,7 @@ def generate_queries(
 
     Returns:
         List of exactly 3 search query strings.
-        Falls back to template queries on any error.
+        Falls back to angle-specific template queries on any error.
     """
     user_message = (
         f"Drug: {drug_key}\n"
@@ -180,7 +186,6 @@ def generate_queries(
             response.usage.total_tokens,
         )
 
-        # Parse JSON array from response
         # Strip markdown fences if model added them despite instructions
         clean = raw_text.strip()
         if clean.startswith("```"):
@@ -230,31 +235,32 @@ def agent1_node(state: SignalState) -> dict:
     """
     LangGraph node for Agent 1.
 
-    Reads from state:
+    Reads from state (all loaded from signals_flagged by pipeline.py):
         drug_key    — canonical drug name
         pt          — MedDRA preferred term
         prr         — Proportional Reporting Ratio
         case_count  — number of cases (A in PRR formula)
-        stat_score  — already computed by Branch 2, passed through unchanged
+        stat_score  — already in state, computed by Branch 2 and stored
+                      in signals_flagged. Not recomputed here.
 
     Adds to state:
         search_queries — 3 PubMed search queries for Agent 2
 
     Agent 1 does NOT write to any database table.
-    It only populates search_queries and returns the updated state fragment.
     Agent 2 uses search_queries to query ChromaDB.
+    Agent 3 uses stat_score (already in state) for priority tier and SafetyBrief.
 
     Returns:
-        Dict with search_queries key only — LangGraph merges this into state.
+        Dict with search_queries only — LangGraph merges this into state.
     """
     drug_key   = state["drug_key"]
     pt         = state["pt"]
     prr        = state["prr"]
     case_count = state["case_count"]
-    stat_score = state.get("stat_score")
+    stat_score = state["stat_score"]   # loaded from signals_flagged, not recomputed
 
     log.info(
-        "agent1_start drug=%s pt=%s prr=%.2f cases=%d stat_score=%s",
+        "agent1_start drug=%s pt=%s prr=%.2f cases=%d stat_score=%.4f",
         drug_key, pt, prr, case_count, stat_score,
     )
 
