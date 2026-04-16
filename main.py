@@ -21,6 +21,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.routers.signals import router as signals_router
+from app.routers.hitl import router as hitl_router
 
 load_dotenv()
 
@@ -30,7 +31,6 @@ app = FastAPI(
     version    = "1.0.0",
 )
 
-# Allow Streamlit (localhost:8501) to call the API
 app.add_middleware(
     CORSMiddleware,
     allow_origins    = ["http://localhost:8501"],
@@ -38,9 +38,8 @@ app.add_middleware(
     allow_headers    = ["*"],
 )
 
-# Register routers
 app.include_router(signals_router)
-# app.include_router(hitl_router)        # add when hitl.py is ready
+app.include_router(hitl_router)
 # app.include_router(evaluation_router)  # add when evaluation.py is ready
 
 
