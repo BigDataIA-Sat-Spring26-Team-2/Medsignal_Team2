@@ -21,6 +21,7 @@ from typing import Optional
 
 import snowflake.connector
 from dotenv import load_dotenv
+from app.utils.snowflake_client import get_conn
 
 from app.utils.redis_client import (
     cache_get,
@@ -35,18 +36,6 @@ load_dotenv()
 log = logging.getLogger(__name__)
 
 
-# ── Database ──────────────────────────────────────────────────────────────────
-
-def _get_conn():
-    """Snowflake connection — called only on cache miss."""
-    return snowflake.connector.connect(
-        account  =os.getenv("SNOWFLAKE_ACCOUNT"),
-        user     =os.getenv("SNOWFLAKE_USER"),
-        password =os.getenv("SNOWFLAKE_PASSWORD"),
-        database =os.getenv("SNOWFLAKE_DATABASE"),
-        schema   =os.getenv("SNOWFLAKE_SCHEMA", "PUBLIC"),
-        warehouse=os.getenv("SNOWFLAKE_WAREHOUSE"),
-    )
 
 
 # ── Snowflake queries — called only on cache miss ─────────────────────────────

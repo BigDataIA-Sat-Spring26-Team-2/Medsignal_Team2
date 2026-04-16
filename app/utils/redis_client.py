@@ -53,7 +53,7 @@ TTL_QUEUE_DEPTH = int(os.getenv("REDIS_TTL_QUEUE_DEPTH",  "60"))    # 1 minute
 PREFIX_SIGNALS     = "medsignal:signals"
 PREFIX_BRIEF       = "medsignal:brief"
 KEY_QUEUE_DEPTH    = "medsignal:hitl:queue_depth"
-KEY_SIGNALS_COUNT  = "medsignal:signals:total_count"
+
 
 
 # ── Lazy initialization ───────────────────────────────────────────────────────
