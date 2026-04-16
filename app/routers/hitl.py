@@ -35,6 +35,7 @@ class HITLDecision(BaseModel):
     pt           : str
     decision     : str   # APPROVE / REJECT / ESCALATE
     reviewer_note: Optional[str] = None
+    brief_id     : Optional[int] = None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -80,6 +81,7 @@ def get_queue():
     cur.execute(
         """
         SELECT
+            sb.brief_id,
             sb.drug_key,
             sb.pt,
             sb.priority,
@@ -177,14 +179,15 @@ def post_decision(decision: HITLDecision):
 
     cur.execute(
         """
-        INSERT INTO hitl_decisions (drug_key, pt, decision, reviewer_note, decided_at)
-        VALUES (%s, %s, %s, %s, %s)
+        INSERT INTO hitl_decisions (drug_key, pt, decision, reviewer_note, brief_id, decided_at)
+        VALUES (%s, %s, %s, %s, %s, %s)
         """,
         (
             decision.drug_key,
             decision.pt,
             decision.decision.upper(),
             decision.reviewer_note,
+            decision.brief_id,
             datetime.now(timezone.utc),
         ),
     )

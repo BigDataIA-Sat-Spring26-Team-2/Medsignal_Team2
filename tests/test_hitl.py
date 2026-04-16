@@ -19,12 +19,6 @@ from fastapi.testclient import TestClient
 # SECTION 1 — Unit tests (no Snowflake, no network)
 # ══════════════════════════════════════════════════════════════════════════════
 
-# ── What TestClient is ────────────────────────────────────────────────────────
-# FastAPI has a built-in test client that lets you call your endpoints
-# directly in Python without running a real server. You call
-# client.get("/hitl/queue") and it behaves exactly like a real HTTP request
-# but runs in-memory. No port, no uvicorn needed.
-
 @pytest.fixture
 def client():
     """
@@ -33,7 +27,7 @@ def client():
     pytest fixtures are reusable setup functions — any test function
     that lists 'client' as a parameter automatically gets this object.
     """
-    from app.main import app
+    from main import app
     return TestClient(app)
 
 
@@ -41,18 +35,23 @@ def client():
 
 @pytest.mark.unit
 def test_health_returns_ok(client):
-    """GET /health must return 200 with status=ok."""
+    """
+    GET /health must return 200 with status=ok.
+    Health endpoint connects to Snowflake so we only check status key —
+    snowflake_version field is also present but not asserted here.
+    """
     response = client.get("/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    assert response.json()["status"] == "ok"
 
 
 @pytest.mark.unit
 def test_health_is_fast(client):
     """
-    Health check must respond quickly — Streamlit polls this on startup.
-    No database calls should happen inside /health.
+    Health check must respond — Streamlit polls this on startup.
+    Snowflake cold start can take 3-8 seconds so we allow up to 15 seconds.
+    If it takes longer than that something is wrong with the connection.
     """
     import time
     start    = time.time()
@@ -60,7 +59,7 @@ def test_health_is_fast(client):
     elapsed  = time.time() - start
 
     assert response.status_code == 200
-    assert elapsed < 1.0, f"Health check took {elapsed:.2f}s — too slow"
+    assert elapsed < 15.0, f"Health check took {elapsed:.2f}s — Snowflake may be down"
 
 
 # ── POST /hitl/decisions — validation ────────────────────────────────────────
@@ -76,7 +75,7 @@ def test_post_decision_rejects_invalid_decision(client):
         json={
             "drug_key": "bupropion",
             "pt"      : "seizure",
-            "decision": "MAYBE",   # not a valid decision
+            "decision": "MAYBE",
         },
     )
     assert response.status_code == 422
@@ -90,7 +89,6 @@ def test_post_decision_rejects_missing_drug_key(client):
         json={
             "pt"      : "seizure",
             "decision": "APPROVE",
-            # drug_key missing
         },
     )
     assert response.status_code == 422
@@ -104,7 +102,6 @@ def test_post_decision_rejects_missing_pt(client):
         json={
             "drug_key": "bupropion",
             "decision": "APPROVE",
-            # pt missing
         },
     )
     assert response.status_code == 422
@@ -121,11 +118,6 @@ def test_post_decision_accepts_lowercase(client):
          patch("app.routers.hitl._get_pending_count", return_value=5), \
          patch("app.routers.hitl.set_queue_depth"):
 
-        # Mock the Snowflake cursor chain:
-        # get_conn() returns a connection object
-        # conn.cursor() returns a cursor object
-        # cur.execute() does nothing (we don't want a real DB call)
-        # conn.commit() does nothing
         mock_cur  = MagicMock()
         mock_conn.return_value.__enter__ = MagicMock()
         mock_conn.return_value.cursor.return_value = mock_cur
@@ -136,15 +128,11 @@ def test_post_decision_accepts_lowercase(client):
             json={
                 "drug_key": "bupropion",
                 "pt"      : "seizure",
-                "decision": "approve",   # lowercase
+                "decision": "approve",
             },
         )
 
-    # Even with mocked DB, response shape must be correct
-    # If it fails with 500 that means the mock isn't set up right
-    # If it returns 200 the router correctly uppercased and accepted it
     assert response.status_code in [200, 500]
-    # We check the logic not the DB — if 200, decision was uppercased
     if response.status_code == 200:
         assert response.json()["decision"] == "APPROVE"
 
@@ -157,17 +145,16 @@ def test_post_decision_reviewer_note_is_optional(client):
     """
     from app.routers.hitl import HITLDecision
 
-    # Test the Pydantic model directly without going through HTTP
     decision = HITLDecision(
         drug_key="bupropion",
         pt      ="seizure",
         decision="APPROVE",
-        # reviewer_note omitted
     )
 
     assert decision.reviewer_note is None
-    assert decision.drug_key == "bupropion"
-    assert decision.decision == "APPROVE"
+    assert decision.brief_id      is None
+    assert decision.drug_key      == "bupropion"
+    assert decision.decision      == "APPROVE"
 
 
 @pytest.mark.unit
@@ -185,15 +172,40 @@ def test_hitl_decision_model_all_valid_decisions():
 
 
 @pytest.mark.unit
+def test_hitl_decision_model_brief_id_is_optional():
+    """
+    brief_id is Optional — omitting it must not cause validation error.
+    Populated when Streamlit passes it back from the queue response.
+    Null is valid for signals where brief generation failed.
+    """
+    from app.routers.hitl import HITLDecision
+
+    without_brief = HITLDecision(
+        drug_key="bupropion",
+        pt      ="seizure",
+        decision="APPROVE",
+    )
+    assert without_brief.brief_id is None
+
+    with_brief = HITLDecision(
+        drug_key="bupropion",
+        pt      ="seizure",
+        decision="APPROVE",
+        brief_id=42,
+    )
+    assert with_brief.brief_id == 42
+
+
+@pytest.mark.unit
 def test_get_queue_returns_list(client):
     """
     GET /hitl/queue must always return a list — never a dict or null.
     Mocks Snowflake so no real DB connection needed.
     Empty list is valid (no signals pending).
     """
-    mock_rows    = []   # empty queue
+    mock_rows    = []
     mock_columns = [
-        "drug_key", "pt", "priority", "stat_score", "lit_score",
+        "brief_id", "drug_key", "pt", "priority", "stat_score", "lit_score",
         "recommended_action", "brief_text", "generation_error",
         "prr", "case_count", "death_count", "hosp_count",
         "lt_count", "generated_at",
@@ -202,7 +214,6 @@ def test_get_queue_returns_list(client):
     with patch("app.routers.hitl.get_conn") as mock_conn:
         mock_cur = MagicMock()
         mock_cur.fetchall.return_value = mock_rows
-        # cur.description returns a list of tuples — first element is column name
         mock_cur.description = [(col,) for col in mock_columns]
         mock_conn.return_value.cursor.return_value = mock_cur
         mock_conn.return_value.close = MagicMock()
@@ -217,17 +228,19 @@ def test_get_queue_returns_list(client):
 @pytest.mark.unit
 def test_get_queue_returns_correct_shape(client):
     """
-    GET /hitl/queue rows must have the expected fields.
-    Verifies column mapping (zip columns + row) produces correct dict keys.
+    GET /hitl/queue rows must have the expected fields including brief_id.
+    brief_id was added after Samiksha's review — verifies the SELECT
+    includes it and the column mapping produces the correct dict key.
     """
     mock_columns = [
-        "drug_key", "pt", "priority", "stat_score", "lit_score",
+        "brief_id", "drug_key", "pt", "priority", "stat_score", "lit_score",
         "recommended_action", "brief_text", "generation_error",
         "prr", "case_count", "death_count", "hosp_count",
         "lt_count", "generated_at",
     ]
     mock_rows = [
         (
+            1,
             "bupropion", "seizure", "P1", 0.78, 0.65,
             "LABEL_UPDATE", "Brief text here", False,
             4.2, 89, 3, 12, 5, "2026-04-16T00:00:00",
@@ -249,9 +262,10 @@ def test_get_queue_returns_correct_shape(client):
     assert len(data) == 1
 
     row = data[0]
-    assert row["drug_key"]  == "bupropion"
-    assert row["pt"]        == "seizure"
-    assert row["priority"]  == "P1"
+    assert row["brief_id"]   == 1
+    assert row["drug_key"]   == "bupropion"
+    assert row["pt"]         == "seizure"
+    assert row["priority"]   == "P1"
     assert row["stat_score"] == 0.78
 
 
@@ -284,10 +298,14 @@ def test_get_decisions_returns_list(client):
 
 @pytest.mark.integration
 def test_health_endpoint_live(client):
-    """Live health check — no DB involved, always fast."""
+    """
+    Live health check — connects to real Snowflake.
+    Returns status=ok and snowflake_version as connectivity proof.
+    """
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+    assert "snowflake_version" in response.json()
 
 
 @pytest.mark.integration
@@ -308,7 +326,11 @@ def test_get_queue_live(client):
 
     print(f"\nQueue depth: {len(response.json())} signals pending")
     for row in response.json()[:3]:
-        print(f"  {row['drug_key']} x {row['pt']} | priority={row['priority']}")
+        print(
+            f"  brief_id={row.get('brief_id')} | "
+            f"{row['drug_key']} x {row['pt']} | "
+            f"priority={row['priority']}"
+        )
 
     assert response.status_code == 200
     assert isinstance(response.json(), list)
@@ -339,7 +361,7 @@ def test_get_decisions_live(client):
 def test_post_decision_live(client):
     """
     Live POST /hitl/decisions against real Snowflake.
-    Writes a real row to hitl_decisions.
+    Writes a real row to hitl_decisions with brief_id=None (no brief yet).
     Uses bupropion x seizure — must exist in safety_briefs first.
 
     Verify after running:
