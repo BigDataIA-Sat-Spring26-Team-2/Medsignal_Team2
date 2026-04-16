@@ -9,7 +9,6 @@ The local _compute_stat_score() fallback only fires if Agent 1 has not run.
 Retry logic: one retry on Pydantic failure with the validation error in prompt.
 On second failure: writes generation_error=True so HITL still sees the signal.
 
-Owner: Siddharth
 """
 
 import json
@@ -18,7 +17,7 @@ import math
 import os
 from datetime import datetime, timezone
 from typing import List, Literal, Optional
-
+from app.utils.snowflake_client import get_conn
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -244,7 +243,7 @@ def _write_to_snowflake(
     output_tok: int,
     gen_error : bool,
 ) -> None:
-    conn = _get_conn()
+    conn = get_conn()
     cur  = conn.cursor()
 
     cur.execute(
