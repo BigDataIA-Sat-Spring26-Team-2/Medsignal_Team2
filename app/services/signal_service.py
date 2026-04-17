@@ -41,13 +41,98 @@ log = logging.getLogger(__name__)
 # ── Snowflake queries — called only on cache miss ─────────────────────────────
 
 def _query_signals(priority: Optional[str], limit: int) -> list:
-    """TODO: Siddharth implements full query against signals_flagged."""
-    raise NotImplementedError
+    """Query signals_flagged LEFT JOIN safety_briefs."""
+    priority_filter = "AND sb.priority = %s" if priority else ""
+    params = [priority, limit] if priority else [limit]
+
+    query = f"""
+        SELECT
+            sf.drug_key,
+            sf.pt,
+            sf.prr,
+            sf.stat_score,
+            sf.drug_reaction_count,
+            sf.death_count,
+            sf.hosp_count,
+            sf.lt_count,
+            sf.drug_total,
+            TO_CHAR(sf.computed_at, 'YYYY-MM-DD HH24:MI:SS') AS computed_at,
+            sb.lit_score,
+            sb.priority,
+            sb.generation_error
+        FROM signals_flagged sf
+        LEFT JOIN safety_briefs sb
+            ON sf.drug_key = sb.drug_key AND sf.pt = sb.pt
+        WHERE 1=1 {priority_filter}
+        ORDER BY
+            CASE sb.priority
+                WHEN 'P1' THEN 1
+                WHEN 'P2' THEN 2
+                WHEN 'P3' THEN 3
+                WHEN 'P4' THEN 4
+                ELSE 5
+            END,
+            sf.prr DESC
+        LIMIT %s
+    """
+
+    conn = get_conn()
+    cur  = conn.cursor()
+    cur.execute(query, params)
+    rows    = cur.fetchall()
+    columns = [desc[0].lower() for desc in cur.description]
+    cur.close()
+    conn.close()
+
+    return [dict(zip(columns, row)) for row in rows]
 
 
 def _query_brief(drug_key: str, pt: str) -> Optional[dict]:
-    """TODO: Siddharth implements full query against safety_briefs."""
-    raise NotImplementedError
+    """Query full signal detail including SafetyBrief for one signal."""
+    query = """
+        SELECT
+            sf.drug_key,
+            sf.pt,
+            sf.prr,
+            sf.stat_score,
+            sf.drug_reaction_count,
+            sf.drug_no_reaction_count,
+            sf.other_reaction_count,
+            sf.other_no_reaction_count,
+            sf.death_count,
+            sf.hosp_count,
+            sf.lt_count,
+            sf.drug_total,
+            TO_CHAR(sf.computed_at, 'YYYY-MM-DD HH24:MI:SS') AS computed_at,
+            sb.brief_id,
+            sb.lit_score,
+            sb.priority,
+            sb.brief_text,
+            sb.key_findings,
+            sb.pmids_cited,
+            sb.recommended_action,
+            sb.model_used,
+            sb.generation_error,
+            TO_CHAR(sb.generated_at, 'YYYY-MM-DD HH24:MI:SS') AS generated_at
+        FROM signals_flagged sf
+        LEFT JOIN safety_briefs sb
+            ON sf.drug_key = sb.drug_key AND sf.pt = sb.pt
+        WHERE sf.drug_key = %s AND sf.pt = %s
+        LIMIT 1
+    """
+
+    conn = get_conn()
+    cur  = conn.cursor()
+    cur.execute(query, (drug_key, pt))
+    row     = cur.fetchone()
+    columns = [desc[0].lower() for desc in cur.description]
+    cur.close()
+    conn.close()
+
+    if row is None:
+        return None
+
+    return dict(zip(columns, row))
 
 
 # ── Public API — Redis read-through ───────────────────────────────────────────
