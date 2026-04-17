@@ -141,7 +141,7 @@ def _get_bm25():
         collection = _get_collection()
 
         # Load all documents from ChromaDB
-        all_data   = collection.get(include=["documents", "metadatas"])
+        all_data   = collection.get(include=["documents", "metadatas"], limit=10000,)
         _BM25_DOCS  = all_data["documents"]
         _BM25_IDS   = all_data["ids"]
         _BM25_METAS = all_data["metadatas"]
@@ -203,8 +203,8 @@ def hnsw_search(
         filtered.append({
             "pmid"      : meta.get("pmid", "unknown"),
             "text"      : doc,
-            "distance"  : dist,
-            "similarity": round(similarity, 4),
+            "distance"  : float(dist),
+            "similarity": round(float(similarity), 4),
             "drug_name" : drug_key,
             "retriever" : "hnsw",
         })
@@ -263,8 +263,8 @@ def bm25_search(
         results.append({
             "pmid"      : meta.get("pmid", "unknown"),
             "text"      : doc,
-            "distance"  : 1.0 - normalized_similarity,
-            "similarity": round(normalized_similarity, 4),
+            "distance"  : float(1.0 - normalized_similarity),  # BM25 has no true distance, so we invert similarity
+            "similarity": round(float(normalized_similarity), 4), # Higher BM25 score means more relevant
             "drug_name" : drug_key,
             "retriever" : "bm25",
         })
@@ -309,11 +309,11 @@ def reciprocal_rank_fusion(query_results: list) -> list:
                 fused[pmid] = {**result, "rrf_score": rrf_score}
             else:
                 fused[pmid]["rrf_score"] += rrf_score
-                fused[pmid]["distance"]   = min(
+                fused[pmid]["distance"]   = float(min(
                     fused[pmid]["distance"], result["distance"]
-                )
+                ))
                 fused[pmid]["similarity"] = round(
-                    1.0 - fused[pmid]["distance"], 4
+                    float(1.0 - fused[pmid]["distance"]), 4
                 )
 
     return sorted(fused.values(), key=lambda x: x["rrf_score"], reverse=True)
@@ -337,7 +337,7 @@ def compute_lit_score(abstracts: list) -> float:
     if not abstracts:
         return 0.0
 
-    avg_distance    = sum(a["distance"] for a in abstracts) / len(abstracts)
+    avg_distance    = sum(float(a["distance"]) for  a in abstracts) / len(abstracts)
     relevance_score = max(0.0, 1.0 - (avg_distance / 1.5))
     volume_score    = min(len(abstracts) / MAX_ABSTRACTS, 1.0)
 

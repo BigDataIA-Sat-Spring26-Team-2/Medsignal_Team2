@@ -218,8 +218,8 @@ def load_golden_signals() -> list:
 
     signals = [
         {
-            "drug_key"   : row[0],
-            "pt"         : row[1],
+            "drug_key"   : str(row[0]),
+            "pt"         : str(row[1]),
             "prr"        : float(row[2]),
             "case_count" : int(row[3]),
             "death_count": int(row[4] or 0),
@@ -236,7 +236,28 @@ def load_golden_signals() -> list:
     )
 
     return signals
+def _sanitize_state(state: dict) -> dict:
+    """
+    Recursively convert numpy types to plain Python types.
+    Called before pipeline.invoke() to prevent MemorySaver
+    msgpack serialization failures.
+    """
+    import numpy as np
 
+    def convert(obj):
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, dict):
+            return {k: convert(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [convert(i) for i in obj]
+        return obj
+
+    return convert(state)
 
 def load_single_signal(drug_key: str, pt: str) -> dict:
     """
@@ -319,12 +340,12 @@ def build_initial_state(signal: dict) -> SignalState:
         # Stage 0 — from signals_flagged
         "drug_key"   : signal["drug_key"],
         "pt"         : signal["pt"],
-        "prr"        : signal["prr"],
-        "case_count" : signal["case_count"],
-        "death_count": signal["death_count"],
-        "hosp_count" : signal["hosp_count"],
-        "lt_count"   : signal["lt_count"],
-        "stat_score" : signal["stat_score"],
+        "prr"        : float(signal["prr"]),
+        "case_count" : int(signal["case_count"]),
+        "death_count": int(signal["death_count"]),
+        "hosp_count" : int(signal["hosp_count"]),
+        "lt_count"   : int(signal["lt_count"]),
+        "stat_score" : float(signal["stat_score"]) if signal["stat_score"] is not None else None,
 
         # Stage 1 — Agent 1 outputs
         "search_queries": None,
@@ -360,6 +381,7 @@ def run_pipeline_for_signal(signal: dict) -> dict:
     pt       = signal["pt"]
 
     initial_state = build_initial_state(signal)
+    initial_state = _sanitize_state(initial_state)
 
     # Replace spaces in pt with underscores for a valid thread_id
     thread_id = f"{drug_key}__{pt.replace(' ', '_').replace('/', '_')}"
@@ -443,9 +465,11 @@ def run_all_golden_signals():
             invalidate_brief(drug_key, pt)
 
         except Exception as exc:
+            import traceback
             log.error(
-                "exception drug=%s pt=%s error=%s",
-                drug_key, pt, exc,
+                 "exception drug=%s pt=%s error=%s\n%s",
+                     drug_key, pt, exc,
+                 traceback.format_exc()  # ← add this
             )
             exceptions += 1
             continue

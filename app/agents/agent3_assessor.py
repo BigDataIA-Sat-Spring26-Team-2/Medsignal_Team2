@@ -126,9 +126,11 @@ def _validate_citations(
     brief: SafetyBriefOutput,
     retrieved_pmids: List[str],
 ) -> SafetyBriefOutput:
-    retrieved  = set(retrieved_pmids)
-    cleaned    = [p for p in brief.pmids_cited if p in retrieved]
-    fabricated = set(brief.pmids_cited) - retrieved
+    def normalize(p: str) -> str:
+        return p.strip().lstrip("PMID:").strip()
+    retrieved  = {normalize(p) for p in retrieved_pmids}
+    cleaned    = [p for p in brief.pmids_cited if normalize(p) in retrieved]
+    fabricated = set(brief.pmids_cited) - set(cleaned)
 
     if fabricated:
         log.warning(
@@ -153,14 +155,18 @@ def _format_abstracts(abstracts: list) -> str:
         )
     return "\n\n".join(lines)
 
-
+#Handled agent hallucinations in pmids_cited 
 def _build_prompt(state: dict, priority: str) -> str:
+    retrieved_pmids = [a.get("pmid", "") for a in (state.get("abstracts") or [])]
     return f"""Drug: {state["drug_key"]}
 Reaction (MedDRA PT): {state["pt"]}
 PRR: {state["prr"]:.2f} | Cases: {state["case_count"]}
 Deaths: {state["death_count"]} | Hospitalizations: {state["hosp_count"]} | Life-threatening: {state["lt_count"]}
 StatScore: {state["stat_score"]:.4f} | LitScore: {state["lit_score"]:.4f}
 Priority: {priority}
+
+You MUST cite only these PMIDs: {retrieved_pmids}
+Do not cite any PMID not in this list. If no PMID is relevant, leave pmids_cited empty.
 
 Retrieved abstracts — cite using [PMID:xxxxxxxx] inline in brief_text:
 {_format_abstracts(state.get("abstracts") or [])}
