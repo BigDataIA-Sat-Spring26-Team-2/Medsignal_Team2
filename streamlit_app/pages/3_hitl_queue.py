@@ -1,22 +1,19 @@
 """
 streamlit_app/pages/3_hitl_queue.py — HITL Review Queue
 
-Pharmacovigilance analyst review interface. Displays all signals
-awaiting human decision, sorted P1 first then by stat_score.
-
-This file defines the visual design system for all four Streamlit pages.
-The CSS block, color tokens, topbar, and card patterns are the template
-that Signal Feed, Signal Detail, and Evaluation Dashboard follow exactly.
-
-Connects to FastAPI at localhost:8000.
-POST /hitl/decisions on every approve / reject / escalate action.
+Key rendering fix:
+    Streamlit closes unclosed HTML divs when it encounters native widgets.
+    Cards are split into three self-contained HTML blocks:
+        ms-card-top    — header, metrics, scores, outcomes, brief
+        ms-card-mid    — wraps Streamlit widgets (textarea + buttons)
+        ms-card-bottom — timestamp
+    All three share visual continuity via matching border/bg and
+    border-radius only on the outer corners.
 """
 
 import requests
 import streamlit as st
 from datetime import datetime
-
-# ── Page config — must be first Streamlit call ────────────────────────────────
 
 st.set_page_config(
     page_title="MedSignal — Review Queue",
@@ -27,60 +24,40 @@ st.set_page_config(
 
 API_BASE = "http://localhost:8000"
 
-# ── Design system ─────────────────────────────────────────────────────────────
-# Single source of truth for all visual tokens.
-# Copy this entire <style> block to every other page unchanged.
-# To retheme the whole product, change values here only.
-
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&family=Inter:wght@300;400;500;600&display=swap');
 
 :root {
-    /* Surface */
     --bg-base       : #080C14;
     --bg-surface    : #0E1421;
     --bg-elevated   : #141C2E;
     --bg-hover      : #1A2238;
-
-    /* Borders */
     --border        : rgba(255,255,255,0.06);
     --border-strong : rgba(255,255,255,0.10);
-
-    /* Text */
     --text-primary  : #EEF2FF;
     --text-secondary: #7B8DB0;
     --text-muted    : #3D4F6E;
     --text-dim      : #2A3850;
-
-    /* Priority */
     --p1            : #F72A2A;
-    --p1-dim        : rgba(247, 42, 42, 0.12);
-    --p1-border     : rgba(247, 42, 42, 0.30);
-
+    --p1-dim        : rgba(247,42,42,0.12);
+    --p1-border     : rgba(247,42,42,0.30);
     --p2            : #F97316;
-    --p2-dim        : rgba(249, 115, 22, 0.12);
-    --p2-border     : rgba(249, 115, 22, 0.30);
-
+    --p2-dim        : rgba(249,115,22,0.12);
+    --p2-border     : rgba(249,115,22,0.30);
     --p3            : #EAB308;
-    --p3-dim        : rgba(234, 179, 8, 0.12);
-    --p3-border     : rgba(234, 179, 8, 0.30);
-
+    --p3-dim        : rgba(234,179,8,0.12);
+    --p3-border     : rgba(234,179,8,0.30);
     --p4            : #22C55E;
-    --p4-dim        : rgba(34, 197, 94, 0.10);
-    --p4-border     : rgba(34, 197, 94, 0.25);
-
-    /* Accent */
+    --p4-dim        : rgba(34,197,94,0.10);
+    --p4-border     : rgba(34,197,94,0.25);
     --accent        : #3B82F6;
-    --accent-dim    : rgba(59, 130, 246, 0.15);
-
-    /* Typography */
+    --accent-dim    : rgba(59,130,246,0.15);
     --font-display  : 'Syne', sans-serif;
     --font-mono     : 'JetBrains Mono', monospace;
     --font-body     : 'Inter', sans-serif;
 }
 
-/* ── Reset & base ─────────────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 html, body, .stApp {
@@ -94,12 +71,9 @@ html, body, .stApp {
 [data-testid="stToolbar"],
 [data-testid="stDecoration"],
 [data-testid="stStatusWidget"] { display: none !important; }
-
 [data-testid="stSidebar"] { display: none !important; }
-
 .block-container { padding: 0 !important; max-width: 100% !important; }
 
-/* ── Topbar ───────────────────────────────────────────────────────────────── */
 .ms-topbar {
     display: flex;
     align-items: center;
@@ -112,7 +86,6 @@ html, body, .stApp {
     top: 0;
     z-index: 200;
 }
-
 .ms-brand {
     font-family: var(--font-display);
     font-size: 17px;
@@ -120,11 +93,8 @@ html, body, .stApp {
     letter-spacing: -0.3px;
     color: var(--text-primary);
 }
-
 .ms-brand span { color: var(--accent); }
-
 .ms-nav { display: flex; gap: 2px; }
-
 .ms-navlink {
     font-family: var(--font-body);
     font-size: 12px;
@@ -133,19 +103,11 @@ html, body, .stApp {
     text-decoration: none;
     padding: 6px 14px;
     border-radius: 6px;
-    letter-spacing: 0.2px;
     transition: background 0.12s, color 0.12s;
 }
-
 .ms-navlink:hover { background: var(--bg-elevated); color: var(--text-primary); }
 .ms-navlink.active { background: var(--bg-elevated); color: var(--text-primary); }
-
-.ms-topbar-right {
-    display: flex;
-    align-items: center;
-    gap: 20px;
-}
-
+.ms-topbar-right { display: flex; align-items: center; }
 .ms-live {
     display: flex;
     align-items: center;
@@ -153,27 +115,15 @@ html, body, .stApp {
     font-family: var(--font-mono);
     font-size: 11px;
     color: var(--text-muted);
-    letter-spacing: 0.3px;
 }
-
 .ms-live-dot {
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
+    width: 5px; height: 5px; border-radius: 50%;
     background: var(--p4);
     animation: blink 2.5s ease-in-out infinite;
 }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.25} }
 
-@keyframes blink {
-    0%, 100% { opacity: 1; }
-    50%       { opacity: 0.25; }
-}
-
-/* ── Page shell ───────────────────────────────────────────────────────────── */
-.ms-page { padding: 36px 40px 60px; max-width: 1440px; margin: 0 auto; }
-
-/* ── Page header ──────────────────────────────────────────────────────────── */
-.ms-page-header { margin-bottom: 32px; }
+.ms-wrap { padding: 36px 40px 60px; max-width: 1440px; margin: 0 auto; }
 
 .ms-page-title {
     font-family: var(--font-display);
@@ -182,32 +132,28 @@ html, body, .stApp {
     color: var(--text-primary);
     letter-spacing: -0.8px;
     line-height: 1;
+    margin-bottom: 8px;
 }
-
 .ms-page-desc {
-    margin-top: 8px;
     font-size: 13px;
     color: var(--text-secondary);
-    font-weight: 400;
     line-height: 1.5;
     max-width: 520px;
-}
-
-/* ── Summary strip ────────────────────────────────────────────────────────── */
-.ms-summary {
-    display: grid;
-    grid-template-columns: repeat(5, 1fr);
-    gap: 10px;
     margin-bottom: 32px;
 }
 
+.ms-summary {
+    display: grid;
+    grid-template-columns: repeat(5,1fr);
+    gap: 10px;
+    margin-bottom: 28px;
+}
 .ms-stat {
     background: var(--bg-surface);
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 16px 18px;
 }
-
 .ms-stat-label {
     font-family: var(--font-mono);
     font-size: 9px;
@@ -217,81 +163,73 @@ html, body, .stApp {
     color: var(--text-muted);
     margin-bottom: 10px;
 }
-
 .ms-stat-value {
     font-family: var(--font-mono);
     font-size: 30px;
     font-weight: 500;
     line-height: 1;
 }
+.v-total{color:var(--text-primary)}
+.v-p1{color:var(--p1)}
+.v-p2{color:var(--p2)}
+.v-p3{color:var(--p3)}
+.v-p4{color:var(--p4)}
 
-.v-total { color: var(--text-primary); }
-.v-p1    { color: var(--p1); }
-.v-p2    { color: var(--p2); }
-.v-p3    { color: var(--p3); }
-.v-p4    { color: var(--p4); }
-
-/* ── Signal card ──────────────────────────────────────────────────────────── */
-.ms-card {
+/* Card is three sections sharing the same bg/border */
+.ms-card-top {
     background: var(--bg-surface);
     border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 22px 24px;
-    margin-bottom: 10px;
-    transition: border-color 0.15s, background 0.15s;
+    border-bottom: none;
+    border-radius: 10px 10px 0 0;
+    padding: 22px 24px 16px 24px;
     position: relative;
     overflow: hidden;
 }
-
-.ms-card:hover { border-color: var(--border-strong); background: var(--bg-elevated); }
-
-.ms-card::before {
-    content: '';
-    position: absolute;
-    left: 0; top: 0; bottom: 0;
-    width: 3px;
+.ms-card-top::before {
+    content:'';
+    position:absolute;
+    left:0;top:0;bottom:0;
+    width:3px;
 }
+.ms-card-top.tier-p1::before{background:var(--p1)}
+.ms-card-top.tier-p2::before{background:var(--p2)}
+.ms-card-top.tier-p3::before{background:var(--p3)}
+.ms-card-top.tier-p4::before{background:var(--p4)}
 
-.ms-card.tier-p1::before { background: var(--p1); }
-.ms-card.tier-p2::before { background: var(--p2); }
-.ms-card.tier-p3::before { background: var(--p3); }
-.ms-card.tier-p4::before { background: var(--p4); }
+.ms-card-mid {
+    background: var(--bg-surface);
+    border-left: 1px solid var(--border);
+    border-right: 1px solid var(--border);
+    padding: 0 24px 12px;
+}
+.ms-card-bottom {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-top: 1px solid var(--border);
+    border-radius: 0 0 10px 10px;
+    padding: 12px 24px 16px;
+}
 
 .ms-card-header {
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
-    margin-bottom: 14px;
+    margin-bottom: 16px;
 }
-
-.ms-card-identity { flex: 1; min-width: 0; }
-
 .ms-drug {
     font-family: var(--font-display);
     font-size: 18px;
     font-weight: 700;
     color: var(--text-primary);
     letter-spacing: -0.3px;
-    line-height: 1.1;
     text-transform: capitalize;
 }
-
 .ms-pt {
-    font-family: var(--font-body);
     font-size: 13px;
     color: var(--text-secondary);
     margin-top: 3px;
-    font-weight: 400;
 }
-
-.ms-card-badges {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-shrink: 0;
-    margin-left: 20px;
-}
-
+.ms-card-badges { display:flex; align-items:center; gap:8px; margin-left:20px; }
 .ms-priority {
     font-family: var(--font-mono);
     font-size: 11px;
@@ -301,12 +239,10 @@ html, body, .stApp {
     border-radius: 5px;
     border: 1px solid;
 }
-
-.ms-priority.p1 { color: var(--p1); background: var(--p1-dim); border-color: var(--p1-border); }
-.ms-priority.p2 { color: var(--p2); background: var(--p2-dim); border-color: var(--p2-border); }
-.ms-priority.p3 { color: var(--p3); background: var(--p3-dim); border-color: var(--p3-border); }
-.ms-priority.p4 { color: var(--p4); background: var(--p4-dim); border-color: var(--p4-border); }
-
+.ms-priority.p1{color:var(--p1);background:var(--p1-dim);border-color:var(--p1-border)}
+.ms-priority.p2{color:var(--p2);background:var(--p2-dim);border-color:var(--p2-border)}
+.ms-priority.p3{color:var(--p3);background:var(--p3-dim);border-color:var(--p3-border)}
+.ms-priority.p4{color:var(--p4);background:var(--p4-dim);border-color:var(--p4-border)}
 .ms-action-badge {
     font-family: var(--font-mono);
     font-size: 9px;
@@ -320,140 +256,117 @@ html, body, .stApp {
     border-radius: 5px;
 }
 
-.ms-metrics { display: flex; gap: 28px; margin-bottom: 14px; }
-
-.ms-metric { display: flex; flex-direction: column; gap: 3px; }
-
+.ms-metrics { display:flex; gap:28px; margin-bottom:14px; }
+.ms-metric { display:flex; flex-direction:column; gap:3px; }
 .ms-metric-label {
-    font-family: var(--font-mono);
-    font-size: 9px;
-    font-weight: 500;
-    letter-spacing: 1.5px;
-    text-transform: uppercase;
-    color: var(--text-muted);
+    font-family:var(--font-mono);
+    font-size:9px; font-weight:500;
+    letter-spacing:1.5px;
+    text-transform:uppercase;
+    color:var(--text-muted);
 }
+.ms-metric-value {
+    font-family:var(--font-mono);
+    font-size:15px; font-weight:500;
+    color:var(--text-primary);
+}
+.ms-metric-value.hl { color:var(--accent); }
 
-.ms-metric-value { font-family: var(--font-mono); font-size: 15px; font-weight: 500; color: var(--text-primary); }
-.ms-metric-value.highlight { color: var(--accent); }
-
-.ms-scores { display: flex; gap: 16px; margin-bottom: 16px; align-items: center; }
-
-.ms-score-item { display: flex; align-items: center; gap: 10px; flex: 1; }
-
+.ms-scores { display:flex; gap:16px; margin-bottom:16px; align-items:center; }
+.ms-score-item { display:flex; align-items:center; gap:10px; flex:1; }
 .ms-score-label {
-    font-family: var(--font-mono);
-    font-size: 9px;
-    font-weight: 500;
-    letter-spacing: 1.2px;
-    text-transform: uppercase;
-    color: var(--text-muted);
-    width: 54px;
-    flex-shrink: 0;
+    font-family:var(--font-mono);
+    font-size:9px; font-weight:500;
+    letter-spacing:1.2px; text-transform:uppercase;
+    color:var(--text-muted); width:54px; flex-shrink:0;
 }
-
-.ms-score-bar-track {
-    flex: 1;
-    height: 3px;
-    background: var(--bg-elevated);
-    border-radius: 2px;
-    overflow: hidden;
+.ms-score-track {
+    flex:1; height:3px;
+    background:var(--bg-elevated);
+    border-radius:2px; overflow:hidden;
 }
-
-.ms-score-bar-fill { height: 100%; border-radius: 2px; transition: width 0.3s ease; }
-
+.ms-score-fill { height:100%; border-radius:2px; }
 .ms-score-val {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--text-secondary);
-    width: 34px;
-    text-align: right;
-    flex-shrink: 0;
+    font-family:var(--font-mono);
+    font-size:11px; color:var(--text-secondary);
+    width:34px; text-align:right; flex-shrink:0;
 }
+
+.ms-outcomes { display:flex; gap:8px; margin-bottom:16px; }
+.ms-flag {
+    font-family:var(--font-mono);
+    font-size:9px; font-weight:500;
+    letter-spacing:1px; text-transform:uppercase;
+    padding:3px 8px; border-radius:4px;
+    border:1px solid var(--border);
+    color:var(--text-muted); background:var(--bg-elevated);
+}
+.ms-flag.on { color:var(--p1); border-color:var(--p1-border); background:var(--p1-dim); }
 
 .ms-brief {
-    font-size: 13px;
-    color: var(--text-secondary);
-    line-height: 1.65;
-    margin-bottom: 18px;
-    padding: 14px 16px;
-    background: var(--bg-elevated);
-    border-radius: 6px;
-    border-left: 2px solid var(--border-strong);
+    font-size:13px; color:var(--text-secondary);
+    line-height:1.65; margin-bottom:16px;
+    padding:14px 16px;
+    background:var(--bg-elevated);
+    border-radius:6px;
+    border-left:2px solid var(--border-strong);
 }
 
-.ms-outcomes { display: flex; gap: 8px; margin-bottom: 18px; }
-
-.ms-outcome-flag {
-    font-family: var(--font-mono);
-    font-size: 9px;
-    font-weight: 500;
-    letter-spacing: 1px;
-    text-transform: uppercase;
-    padding: 3px 8px;
-    border-radius: 4px;
-    border: 1px solid var(--border);
-    color: var(--text-muted);
-    background: var(--bg-elevated);
-}
-
-.ms-outcome-flag.active {
-    color: var(--p1);
-    border-color: var(--p1-border);
-    background: var(--p1-dim);
-}
-
-.ms-card-divider { height: 1px; background: var(--border); margin-bottom: 16px; }
+.ms-divider { height:1px; background:var(--border); margin-bottom:0; }
 
 .ms-timestamp {
-    font-family: var(--font-mono);
-    font-size: 10px;
-    color: var(--text-dim);
-    letter-spacing: 0.3px;
-    margin-top: 12px;
+    font-family:var(--font-mono);
+    font-size:10px; color:var(--text-dim);
 }
 
-/* ── Streamlit button overrides ───────────────────────────────────────────── */
+/* Buttons — always visible text */
 [data-testid="stButton"] button {
-    border-radius: 6px !important;
     font-family: var(--font-mono) !important;
     font-size: 11px !important;
     font-weight: 500 !important;
     letter-spacing: 1px !important;
     text-transform: uppercase !important;
-    padding: 9px 16px !important;
+    padding: 10px 16px !important;
     width: 100% !important;
+    border-radius: 6px !important;
+    border: 1px solid rgba(255,255,255,0.12) !important;
+    background: var(--bg-elevated) !important;
+    color: var(--text-primary) !important;
     transition: all 0.12s !important;
-    border: 1px solid !important;
+}
+[data-testid="stButton"] button:hover {
+    background: var(--bg-hover) !important;
+    border-color: rgba(255,255,255,0.22) !important;
+    color: #fff !important;
+}
+/* Column 2 = Approve */
+div[data-testid="column"]:nth-child(2) [data-testid="stButton"] button {
+    border-color: rgba(34,197,94,0.40) !important;
+    color: #4ADE80 !important;
+    background: rgba(34,197,94,0.10) !important;
+}
+div[data-testid="column"]:nth-child(2) [data-testid="stButton"] button:hover {
+    background: rgba(34,197,94,0.20) !important;
+}
+/* Column 3 = Reject */
+div[data-testid="column"]:nth-child(3) [data-testid="stButton"] button {
+    border-color: rgba(247,42,42,0.40) !important;
+    color: #F87171 !important;
+    background: rgba(247,42,42,0.10) !important;
+}
+div[data-testid="column"]:nth-child(3) [data-testid="stButton"] button:hover {
+    background: rgba(247,42,42,0.20) !important;
+}
+/* Column 4 = Escalate */
+div[data-testid="column"]:nth-child(4) [data-testid="stButton"] button {
+    border-color: rgba(234,179,8,0.40) !important;
+    color: #FACC15 !important;
+    background: rgba(234,179,8,0.10) !important;
+}
+div[data-testid="column"]:nth-child(4) [data-testid="stButton"] button:hover {
+    background: rgba(234,179,8,0.20) !important;
 }
 
-/* ── Empty / error states ─────────────────────────────────────────────────── */
-.ms-empty {
-    text-align: center;
-    padding: 80px 40px;
-}
-
-.ms-empty-title {
-    font-family: var(--font-display);
-    font-size: 22px;
-    color: var(--text-secondary);
-    margin-bottom: 10px;
-    letter-spacing: -0.3px;
-}
-
-.ms-empty-desc { font-size: 13px; color: var(--text-muted); line-height: 1.6; }
-
-.ms-error {
-    background: rgba(220, 38, 38, 0.08);
-    border: 1px solid rgba(220, 38, 38, 0.20);
-    border-radius: 8px;
-    padding: 16px 20px;
-    font-family: var(--font-mono);
-    font-size: 12px;
-    color: #F87171;
-    margin-bottom: 20px;
-}
-
-/* ── Textarea ─────────────────────────────────────────────────────────────── */
 .stTextArea textarea {
     background: var(--bg-elevated) !important;
     border: 1px solid var(--border-strong) !important;
@@ -463,12 +376,10 @@ html, body, .stApp {
     font-size: 12px !important;
     resize: none !important;
 }
-
 .stTextArea textarea:focus {
     border-color: var(--accent) !important;
     box-shadow: 0 0 0 1px var(--accent-dim) !important;
 }
-
 .stTextArea label {
     font-family: var(--font-mono) !important;
     font-size: 10px !important;
@@ -478,7 +389,6 @@ html, body, .stApp {
     color: var(--text-muted) !important;
 }
 
-/* ── Selectbox ────────────────────────────────────────────────────────────── */
 .stSelectbox > div > div {
     background: var(--bg-surface) !important;
     border: 1px solid var(--border-strong) !important;
@@ -488,7 +398,6 @@ html, body, .stApp {
     font-size: 12px !important;
 }
 
-/* ── Expander ─────────────────────────────────────────────────────────────── */
 .streamlit-expanderHeader {
     background: var(--bg-elevated) !important;
     border: 1px solid var(--border) !important;
@@ -498,18 +407,32 @@ html, body, .stApp {
     color: var(--text-secondary) !important;
 }
 
-/* ── Scrollbar ────────────────────────────────────────────────────────────── */
-::-webkit-scrollbar { width: 5px; height: 5px; }
-::-webkit-scrollbar-track { background: var(--bg-base); }
-::-webkit-scrollbar-thumb { background: var(--bg-hover); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+.ms-empty { text-align:center; padding:80px 40px; }
+.ms-empty-title {
+    font-family:var(--font-display);
+    font-size:22px; color:var(--text-secondary);
+    margin-bottom:10px; letter-spacing:-0.3px;
+}
+.ms-empty-desc { font-size:13px; color:var(--text-muted); line-height:1.6; }
+.ms-error {
+    background:rgba(220,38,38,0.08);
+    border:1px solid rgba(220,38,38,0.20);
+    border-radius:8px; padding:16px 20px;
+    font-family:var(--font-mono);
+    font-size:12px; color:#F87171; margin-bottom:20px;
+}
+
+::-webkit-scrollbar { width:5px; height:5px; }
+::-webkit-scrollbar-track { background:var(--bg-base); }
+::-webkit-scrollbar-thumb { background:var(--bg-hover); border-radius:3px; }
+::-webkit-scrollbar-thumb:hover { background:var(--text-muted); }
 </style>
 """, unsafe_allow_html=True)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def fetch_queue() -> list:
+def fetch_queue():
     try:
         r = requests.get(f"{API_BASE}/hitl/queue", timeout=15)
         r.raise_for_status()
@@ -521,18 +444,12 @@ def fetch_queue() -> list:
         return []
 
 
-def post_decision(drug_key: str, pt: str, brief_id,
-                  decision: str, note: str) -> bool:
+def post_decision(drug_key, pt, brief_id, decision, note):
     try:
         r = requests.post(
             f"{API_BASE}/hitl/decisions",
-            json={
-                "drug_key"     : drug_key,
-                "pt"           : pt,
-                "brief_id"     : brief_id,
-                "decision"     : decision,
-                "reviewer_note": note or None,
-            },
+            json={"drug_key": drug_key, "pt": pt, "brief_id": brief_id,
+                  "decision": decision, "reviewer_note": note or None},
             timeout=15,
         )
         return r.status_code == 200
@@ -540,59 +457,39 @@ def post_decision(drug_key: str, pt: str, brief_id,
         return False
 
 
-def score_bar_color(score: float, kind: str) -> str:
+def sbar_color(score, kind):
     if kind == "stat":
-        if score >= 0.7:
-            return "#F72A2A"
-        if score >= 0.5:
-            return "#F97316"
-        return "#3B82F6"
-    else:
-        if score >= 0.5:
-            return "#22C55E"
-        if score >= 0.3:
-            return "#EAB308"
-        return "#4A5568"
+        return "#F72A2A" if score >= 0.7 else "#F97316" if score >= 0.5 else "#3B82F6"
+    return "#22C55E" if score >= 0.5 else "#EAB308" if score >= 0.3 else "#4A5568"
 
+def fsc(v):
+    try: return f"{float(v):.3f}"
+    except: return "—"
 
-def fmt_score(v) -> str:
-    try:
-        return f"{float(v):.3f}"
-    except (TypeError, ValueError):
-        return "—"
+def fprr(v):
+    try: return f"{float(v):.2f}"
+    except: return "—"
 
-
-def fmt_prr(v) -> str:
-    try:
-        return f"{float(v):.2f}"
-    except (TypeError, ValueError):
-        return "—"
-
-
-def fmt_ts(ts) -> str:
-    if not ts:
-        return "—"
+def fts(ts):
+    if not ts: return "—"
     try:
         dt = datetime.fromisoformat(str(ts).replace(" ", "T"))
         return dt.strftime("%d %b %Y  %H:%M UTC")
-    except Exception:
-        return str(ts)
+    except: return str(ts)
 
-
-def priority_class(p: str) -> str:
+def pc(p):
     return (p or "p4").lower()
+
+def ct(sigs, tier):
+    return sum(1 for s in sigs if (s.get("priority") or "").upper() == tier)
 
 
 # ── Session state ─────────────────────────────────────────────────────────────
 
-if "submitted"   not in st.session_state:
-    st.session_state["submitted"]   = {}
-if "expanded"    not in st.session_state:
-    st.session_state["expanded"]    = {}
-if "filter_tier" not in st.session_state:
-    st.session_state["filter_tier"] = "All"
-if "api_error"   not in st.session_state:
-    st.session_state["api_error"]   = None
+for k, v in [("submitted",{}),("expanded",{}),
+              ("filter_tier","All"),("api_error",None)]:
+    if k not in st.session_state:
+        st.session_state[k] = v
 
 
 # ── Topbar ────────────────────────────────────────────────────────────────────
@@ -616,13 +513,13 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 
-# ── Load data ─────────────────────────────────────────────────────────────────
+# ── Data ──────────────────────────────────────────────────────────────────────
 
 queue = fetch_queue()
 
 if queue is None:
     st.markdown("""
-    <div class="ms-page">
+    <div class="ms-wrap">
         <div class="ms-error">
             Cannot reach API at localhost:8000 —
             run: poetry run uvicorn main:app --reload --port 8000
@@ -631,43 +528,25 @@ if queue is None:
     """, unsafe_allow_html=True)
     st.stop()
 
-
-# ── Filter out already-decided signals ────────────────────────────────────────
-
-pending = [
-    s for s in queue
-    if f"{s['drug_key']}|{s['pt']}" not in st.session_state["submitted"]
-]
-
-
-# ── Summary counts ────────────────────────────────────────────────────────────
-
-def count_tier(signals, tier):
-    return sum(1 for s in signals if (s.get("priority") or "").upper() == tier)
+pending = [s for s in queue
+           if f"{s['drug_key']}|{s['pt']}" not in st.session_state["submitted"]]
 
 total = len(pending)
-n_p1  = count_tier(pending, "P1")
-n_p2  = count_tier(pending, "P2")
-n_p3  = count_tier(pending, "P3")
-n_p4  = count_tier(pending, "P4")
+n_p1  = ct(pending, "P1")
+n_p2  = ct(pending, "P2")
+n_p3  = ct(pending, "P3")
+n_p4  = ct(pending, "P4")
 
 
-# ── Page shell ────────────────────────────────────────────────────────────────
-
-st.markdown('<div class="ms-page">', unsafe_allow_html=True)
-
-st.markdown("""
-<div class="ms-page-header">
-    <div class="ms-page-title">Review Queue</div>
-    <div class="ms-page-desc">
-        Signals awaiting pharmacovigilance review, sorted by priority tier
-        then statistical score. Every decision is immutably logged with a
-        UTC timestamp.
-    </div>
-</div>
-""", unsafe_allow_html=True)
+# ── Header + summary — one clean self-contained block ────────────────────────
 
 st.markdown(f"""
+<div class="ms-wrap">
+<div class="ms-page-title">Review Queue</div>
+<div class="ms-page-desc">
+    Signals awaiting pharmacovigilance review, sorted by priority tier
+    then statistical score. Every decision is immutably logged with a UTC timestamp.
+</div>
 <div class="ms-summary">
     <div class="ms-stat">
         <div class="ms-stat-label">Pending</div>
@@ -690,31 +569,31 @@ st.markdown(f"""
         <div class="ms-stat-value v-p4">{n_p4}</div>
     </div>
 </div>
+</div>
 """, unsafe_allow_html=True)
 
-# Tier filter
-col_filter, _ = st.columns([2, 8])
-with col_filter:
-    tier_filter = st.selectbox(
+
+# ── Filter — Streamlit widget, outside any open div ──────────────────────────
+
+fc, _ = st.columns([2, 8])
+with fc:
+    tf = st.selectbox(
         "Filter",
-        options=["All", "P1", "P2", "P3", "P4"],
-        index=["All", "P1", "P2", "P3", "P4"].index(
-            st.session_state["filter_tier"]
-        ),
+        ["All","P1","P2","P3","P4"],
+        index=["All","P1","P2","P3","P4"].index(st.session_state["filter_tier"]),
         label_visibility="collapsed",
         key="tier_select",
     )
-    st.session_state["filter_tier"] = tier_filter
+    st.session_state["filter_tier"] = tf
 
-if tier_filter != "All":
-    pending = [
-        s for s in pending
-        if (s.get("priority") or "").upper() == tier_filter
-    ]
+if tf != "All":
+    pending = [s for s in pending
+               if (s.get("priority") or "").upper() == tf]
 
 if st.session_state["api_error"]:
     st.markdown(
-        f'<div class="ms-error">API error — {st.session_state["api_error"]}</div>',
+        f'<div class="ms-error" style="margin:0 0 16px;">'
+        f'API error — {st.session_state["api_error"]}</div>',
         unsafe_allow_html=True,
     )
 
@@ -728,15 +607,16 @@ if not pending:
         </div>
     </div>
     """, unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
     st.stop()
 
 
-# ── Signal cards ──────────────────────────────────────────────────────────────
+# ── Cards ─────────────────────────────────────────────────────────────────────
+
+st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
 for signal in pending:
     drug_key   = signal.get("drug_key", "")
-    pt         = signal.get("pt", "")
+    pt_val     = signal.get("pt", "")
     priority   = (signal.get("priority") or "P4").upper()
     stat_score = float(signal.get("stat_score") or 0)
     lit_score  = float(signal.get("lit_score")  or 0)
@@ -750,98 +630,98 @@ for signal in pending:
     brief_id   = signal.get("brief_id")
     generated  = signal.get("generated_at")
 
-    card_key    = f"{drug_key}|{pt}"
+    card_key    = f"{drug_key}|{pt_val}"
     is_expanded = st.session_state["expanded"].get(card_key, False)
-    pc          = priority_class(priority)
-    stat_color  = score_bar_color(stat_score, "stat")
-    lit_color   = score_bar_color(lit_score,  "lit")
+    pclass      = pc(priority)
+    sc          = sbar_color(stat_score, "stat")
+    lc          = sbar_color(lit_score,  "lit")
 
-    st.markdown(f"""
-    <div class="ms-card tier-{pc}">
-        <div class="ms-card-header">
-            <div class="ms-card-identity">
-                <div class="ms-drug">{drug_key}</div>
-                <div class="ms-pt">{pt}</div>
-            </div>
-            <div class="ms-card-badges">
-                <div class="ms-priority {pc}">{priority}</div>
-                <div class="ms-action-badge">{rec_action}</div>
-            </div>
-        </div>
-
-        <div class="ms-metrics">
-            <div class="ms-metric">
-                <div class="ms-metric-label">PRR</div>
-                <div class="ms-metric-value highlight">{fmt_prr(prr)}</div>
-            </div>
-            <div class="ms-metric">
-                <div class="ms-metric-label">Cases</div>
-                <div class="ms-metric-value">{int(case_count):,}</div>
-            </div>
-            <div class="ms-metric">
-                <div class="ms-metric-label">Deaths</div>
-                <div class="ms-metric-value">{death}</div>
-            </div>
-            <div class="ms-metric">
-                <div class="ms-metric-label">Hosp.</div>
-                <div class="ms-metric-value">{hosp}</div>
-            </div>
-            <div class="ms-metric">
-                <div class="ms-metric-label">Life-Threat.</div>
-                <div class="ms-metric-value">{lt}</div>
-            </div>
-        </div>
-
-        <div class="ms-scores">
-            <div class="ms-score-item">
-                <div class="ms-score-label">StatScore</div>
-                <div class="ms-score-bar-track">
-                    <div class="ms-score-bar-fill"
-                         style="width:{stat_score*100:.1f}%;background:{stat_color};">
-                    </div>
-                </div>
-                <div class="ms-score-val">{fmt_score(stat_score)}</div>
-            </div>
-            <div class="ms-score-item">
-                <div class="ms-score-label">LitScore</div>
-                <div class="ms-score-bar-track">
-                    <div class="ms-score-bar-fill"
-                         style="width:{lit_score*100:.1f}%;background:{lit_color};">
-                    </div>
-                </div>
-                <div class="ms-score-val">{fmt_score(lit_score)}</div>
-            </div>
-        </div>
-
-        <div class="ms-outcomes">
-            <div class="ms-outcome-flag {'active' if death else ''}">Death</div>
-            <div class="ms-outcome-flag {'active' if lt else ''}">Life-threatening</div>
-            <div class="ms-outcome-flag {'active' if hosp else ''}">Hospitalisation</div>
-        </div>
-    """, unsafe_allow_html=True)
-
-    # Brief text with expand/collapse
     if brief_text:
         preview = brief_text[:300] + ("…" if len(brief_text) > 300 else "")
-        display = brief_text if is_expanded else preview
-        st.markdown(
-            f'<div class="ms-brief">{display}</div>',
-            unsafe_allow_html=True,
-        )
-        if len(brief_text) > 300:
-            label = "Collapse" if is_expanded else "Read full brief"
-            if st.button(label, key=f"toggle_{card_key}"):
-                st.session_state["expanded"][card_key] = not is_expanded
-                st.rerun()
+        disp    = brief_text if is_expanded else preview
+        bhtml   = f'<div class="ms-brief">{disp}</div>'
+    else:
+        bhtml   = ""
 
-    st.markdown('<div class="ms-card-divider"></div>', unsafe_allow_html=True)
+    # ── TOP — fully closed HTML, no widgets inside ────────────────────────
+    st.markdown(f"""
+<div class="ms-card-top tier-{pclass}">
+    <div class="ms-card-header">
+        <div>
+            <div class="ms-drug">{drug_key}</div>
+            <div class="ms-pt">{pt_val}</div>
+        </div>
+        <div class="ms-card-badges">
+            <div class="ms-priority {pclass}">{priority}</div>
+            <div class="ms-action-badge">{rec_action}</div>
+        </div>
+    </div>
+    <div class="ms-metrics">
+        <div class="ms-metric">
+            <div class="ms-metric-label">PRR</div>
+            <div class="ms-metric-value hl">{fprr(prr)}</div>
+        </div>
+        <div class="ms-metric">
+            <div class="ms-metric-label">Cases</div>
+            <div class="ms-metric-value">{int(case_count):,}</div>
+        </div>
+        <div class="ms-metric">
+            <div class="ms-metric-label">Deaths</div>
+            <div class="ms-metric-value">{death}</div>
+        </div>
+        <div class="ms-metric">
+            <div class="ms-metric-label">Hosp.</div>
+            <div class="ms-metric-value">{hosp}</div>
+        </div>
+        <div class="ms-metric">
+            <div class="ms-metric-label">Life-Threat.</div>
+            <div class="ms-metric-value">{lt}</div>
+        </div>
+    </div>
+    <div class="ms-scores">
+        <div class="ms-score-item">
+            <div class="ms-score-label">StatScore</div>
+            <div class="ms-score-track">
+                <div class="ms-score-fill"
+                     style="width:{stat_score*100:.1f}%;background:{sc};"></div>
+            </div>
+            <div class="ms-score-val">{fsc(stat_score)}</div>
+        </div>
+        <div class="ms-score-item">
+            <div class="ms-score-label">LitScore</div>
+            <div class="ms-score-track">
+                <div class="ms-score-fill"
+                     style="width:{lit_score*100:.1f}%;background:{lc};"></div>
+            </div>
+            <div class="ms-score-val">{fsc(lit_score)}</div>
+        </div>
+    </div>
+    <div class="ms-outcomes">
+        <div class="ms-flag {'on' if death else ''}">Death</div>
+        <div class="ms-flag {'on' if lt else ''}">Life-threatening</div>
+        <div class="ms-flag {'on' if hosp else ''}">Hospitalisation</div>
+    </div>
+    {bhtml}
+</div>
+""", unsafe_allow_html=True)
 
-    # Reviewer note + action buttons
-    note_col, approve_col, reject_col, escalate_col = st.columns(
-        [4, 1.2, 1.2, 1.2]
-    )
+    # ── Expand toggle — widget after closed div ───────────────────────────
+    if brief_text and len(brief_text) > 300:
+        st.markdown('<div class="ms-card-mid">', unsafe_allow_html=True)
+        if st.button(
+            "Collapse" if is_expanded else "Read full brief",
+            key=f"toggle_{card_key}",
+        ):
+            st.session_state["expanded"][card_key] = not is_expanded
+            st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
 
-    with note_col:
+    # ── MID — reviewer note + buttons ────────────────────────────────────
+    st.markdown('<div class="ms-card-mid">', unsafe_allow_html=True)
+
+    nc, ac, rc, ec = st.columns([4, 1.2, 1.2, 1.2])
+
+    with nc:
         note = st.text_area(
             "REVIEWER NOTE",
             placeholder="Optional clinical justification...",
@@ -849,60 +729,55 @@ for signal in pending:
             key=f"note_{card_key}",
             label_visibility="visible",
         )
-
-    with approve_col:
+    with ac:
         if st.button("Approve", key=f"approve_{card_key}",
                      use_container_width=True):
-            if post_decision(drug_key, pt, brief_id, "APPROVE", note):
+            if post_decision(drug_key, pt_val, brief_id, "APPROVE", note):
                 st.session_state["submitted"][card_key] = "APPROVE"
                 st.rerun()
-
-    with reject_col:
+    with rc:
         if st.button("Reject", key=f"reject_{card_key}",
                      use_container_width=True):
-            if post_decision(drug_key, pt, brief_id, "REJECT", note):
+            if post_decision(drug_key, pt_val, brief_id, "REJECT", note):
                 st.session_state["submitted"][card_key] = "REJECT"
                 st.rerun()
-
-    with escalate_col:
+    with ec:
         if st.button("Escalate", key=f"escalate_{card_key}",
                      use_container_width=True):
-            if post_decision(drug_key, pt, brief_id, "ESCALATE", note):
+            if post_decision(drug_key, pt_val, brief_id, "ESCALATE", note):
                 st.session_state["submitted"][card_key] = "ESCALATE"
                 st.rerun()
 
-    st.markdown(f"""
-        <div class="ms-timestamp">Generated {fmt_ts(generated)}</div>
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+    # ── BOTTOM — timestamp ────────────────────────────────────────────────
+    st.markdown(f"""
+<div class="ms-card-bottom">
+    <div class="ms-timestamp">Generated {fts(generated)}</div>
+</div>
+<div style="height:12px;"></div>
+""", unsafe_allow_html=True)
 
 
 # ── Decided this session ──────────────────────────────────────────────────────
 
 if st.session_state["submitted"]:
-    st.markdown("<div style='height:32px'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
     with st.expander(
         f"Decided this session  ({len(st.session_state['submitted'])})",
         expanded=False,
     ):
         for key, dec in st.session_state["submitted"].items():
-            drug, pt_val = key.split("|", 1)
-            color = {
-                "APPROVE" : "#4ADE80",
-                "REJECT"  : "#F87171",
-                "ESCALATE": "#FACC15",
-            }.get(dec, "#7B8DB0")
+            drug, pt_v = key.split("|", 1)
+            color = {"APPROVE":"#4ADE80","REJECT":"#F87171",
+                     "ESCALATE":"#FACC15"}.get(dec,"#7B8DB0")
             st.markdown(
                 f'<div style="font-family:var(--font-mono);font-size:12px;'
                 f'padding:8px 0;border-bottom:1px solid var(--border);'
                 f'display:flex;justify-content:space-between;">'
                 f'<span style="color:var(--text-secondary);">'
-                f'{drug} &times; {pt_val}</span>'
+                f'{drug} &times; {pt_v}</span>'
                 f'<span style="color:{color};font-weight:500;">{dec}</span>'
                 f'</div>',
                 unsafe_allow_html=True,
             )
-
-st.markdown("</div>", unsafe_allow_html=True)
