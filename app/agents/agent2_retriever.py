@@ -113,48 +113,112 @@ def _get_collection():
     return _COLLECTION
 
 
+# def _get_bm25():
+#     """
+#     Lazy loader for BM25 sparse index.
+
+#     Loads all documents from ChromaDB once and builds a BM25Okapi index.
+#     BM25 tokenises each document into words and builds an inverted index
+#     for fast keyword scoring.
+
+#     Why load all docs:
+#         BM25 needs the entire corpus to compute IDF (inverse document frequency).
+#         IDF measures how rare a word is across all documents.
+#         A word appearing in 1 of 1964 papers is more informative than one
+#         appearing in 1900 of 1964 papers.
+
+#     Returns:
+#         bm25   : BM25Okapi index over all documents
+#         docs   : list of document texts (parallel to bm25 index)
+#         ids    : list of ChromaDB IDs
+#         metas  : list of metadata dicts (drug_name, pmid, year)
+#     """
+#     global _BM25, _BM25_DOCS, _BM25_IDS, _BM25_METAS
+#     if _BM25 is None:
+#         from rank_bm25 import BM25Okapi
+
+#         log.info("Building BM25 sparse index from ChromaDB...")
+#         collection = _get_collection()
+
+#         # Load all documents from ChromaDB
+#         all_data   = collection.get(include=["documents", "metadatas"], limit=10000,)
+#         _BM25_DOCS  = all_data["documents"]
+#         _BM25_IDS   = all_data["ids"]
+#         _BM25_METAS = all_data["metadatas"]
+
+#         # Tokenise: lowercase + split on whitespace
+#         # Simple tokenisation is sufficient for biomedical abstracts
+#         tokenised = [doc.lower().split() for doc in _BM25_DOCS]
+#         _BM25     = BM25Okapi(tokenised)
+
+#         log.info("BM25 index built — %d documents indexed", len(_BM25_DOCS))
+
+#     return _BM25, _BM25_DOCS, _BM25_IDS, _BM25_METAS
 def _get_bm25():
     """
     Lazy loader for BM25 sparse index.
 
-    Loads all documents from ChromaDB once and builds a BM25Okapi index.
-    BM25 tokenises each document into words and builds an inverted index
-    for fast keyword scoring.
+    Loads all documents from ChromaDB using pagination to stay within
+    the cloud tier GET limit of 300 per request.
+    Fetches in batches of 300 until all documents are retrieved.
 
-    Why load all docs:
-        BM25 needs the entire corpus to compute IDF (inverse document frequency).
-        IDF measures how rare a word is across all documents.
-        A word appearing in 1 of 1964 papers is more informative than one
-        appearing in 1900 of 1964 papers.
-
-    Returns:
-        bm25   : BM25Okapi index over all documents
-        docs   : list of document texts (parallel to bm25 index)
-        ids    : list of ChromaDB IDs
-        metas  : list of metadata dicts (drug_name, pmid, year)
+    Why paginate:
+        ChromaDB cloud free tier enforces limit=300 per GET request.
+        Setting limit=10000 returns HTTP 422 Quota Exceeded.
+        Pagination fetches all 1964 documents across 7 requests of 300.
     """
     global _BM25, _BM25_DOCS, _BM25_IDS, _BM25_METAS
+
     if _BM25 is None:
         from rank_bm25 import BM25Okapi
 
-        log.info("Building BM25 sparse index from ChromaDB...")
+        log.info("Building BM25 sparse index from ChromaDB (paginated)...")
         collection = _get_collection()
 
-        # Load all documents from ChromaDB
-        all_data   = collection.get(include=["documents", "metadatas"], limit=10000,)
-        _BM25_DOCS  = all_data["documents"]
-        _BM25_IDS   = all_data["ids"]
-        _BM25_METAS = all_data["metadatas"]
+        all_docs  = []
+        all_ids   = []
+        all_metas = []
+        offset    = 0
+        batch     = 300   # ChromaDB cloud free tier limit per GET request
 
-        # Tokenise: lowercase + split on whitespace
-        # Simple tokenisation is sufficient for biomedical abstracts
+        while True:
+            page = collection.get(
+                include=["documents", "metadatas"],
+                limit =batch,
+                offset=offset,
+            )
+
+            fetched = len(page["documents"])
+            if fetched == 0:
+                break
+
+            all_docs.extend(page["documents"])
+            all_ids.extend(page["ids"])
+            all_metas.extend(page["metadatas"])
+            offset += fetched
+
+            log.info(
+                "BM25 pagination — fetched=%d offset=%d total_so_far=%d",
+                fetched, offset, len(all_docs),
+            )
+
+            # Stop if fewer than batch size returned — last page
+            if fetched < batch:
+                break
+
+        _BM25_DOCS  = all_docs
+        _BM25_IDS   = all_ids
+        _BM25_METAS = all_metas
+
         tokenised = [doc.lower().split() for doc in _BM25_DOCS]
         _BM25     = BM25Okapi(tokenised)
 
-        log.info("BM25 index built — %d documents indexed", len(_BM25_DOCS))
+        log.info(
+            "BM25 index built — %d documents indexed across %d pages",
+            len(_BM25_DOCS), offset // batch + 1,
+        )
 
     return _BM25, _BM25_DOCS, _BM25_IDS, _BM25_METAS
-
 
 # ── Step 1: HNSW dense retrieval ─────────────────────────────────────────────
 

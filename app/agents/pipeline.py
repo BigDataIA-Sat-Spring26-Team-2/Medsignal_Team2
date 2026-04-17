@@ -36,6 +36,7 @@ import logging
 import os
 from typing import Optional
 
+from app.routers import signals
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
@@ -421,8 +422,8 @@ def run_all_golden_signals():
         Generation err — Agent 3 failed both attempts, generation_error=True
         Exceptions    — unexpected error, signal skipped entirely
     """
-    signals = load_golden_signals()
-
+    #signals = load_golden_signals()
+    signals=load_golden_signals()[:10] # Temporary limit for testing — remove slicing for full run
     if not signals:
         log.error(
             "No golden signals found in signals_flagged. "
