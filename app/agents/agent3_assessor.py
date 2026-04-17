@@ -18,7 +18,7 @@ import math
 import os
 from datetime import datetime, timezone
 from typing import List, Literal, Optional
-
+from app.utils.redis_client import invalidate_brief
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -431,7 +431,7 @@ def agent3_node(state: SignalState) -> dict:
         resolved_state, priority, brief,
         input_tok, output_tok, gen_error,
     )
-
+    invalidate_brief(state["drug_key"], state["pt"])
     return {
         "priority"  : priority,
         "brief"     : brief.model_dump() if brief else None,
