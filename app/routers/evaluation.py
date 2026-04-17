@@ -3,6 +3,7 @@ evaluation.py — FastAPI router for evaluation endpoints.
 
 Endpoints:
     GET /evaluation/lead-times       — detection lead time per golden signal
+    GET /evaluation/precision-recall — how many golden signals were correctly flagged
 
 Data sources:
     drug_reaction_pairs — MIN(fda_dt) per (drug_key, pt) = first flagged date
@@ -18,9 +19,14 @@ Lead time formula:
     Positive = MedSignal detected before FDA communicated (good)
     Negative = MedSignal detected after FDA communicated (signal was late)
 
+Precision formula:
+    precision = flagged_golden / total_golden  (10 golden signals)
+    A signal is "flagged" if it appears in signals_flagged with PRR >= 2.0
+
 """
 
 import logging
+import os
 from datetime import date
 from fastapi import APIRouter, HTTPException
 from app.utils.snowflake_client import get_conn
@@ -96,6 +102,7 @@ GOLDEN_SIGNALS = [
     },
 ]
 
+PRR_THRESHOLD = float(os.getenv("EVAL_PRR_THRESHOLD", "2.0"))
 
 @router.get("/lead-times")
 def get_lead_times():
@@ -156,8 +163,9 @@ def get_lead_times():
         SELECT drug_key, pt
         FROM signals_flagged
         WHERE ({placeholders_sf})
+        AND prr >= %s
         """,
-        params_sf,
+        params_sf + [PRR_THRESHOLD],
     )
     flagged_set = {(row[0], row[1]) for row in cur.fetchall()}
  
@@ -194,3 +202,83 @@ def get_lead_times():
     )
     return results
  
+
+@router.get("/precision-recall")
+def get_precision_recall():
+    """
+    GET /evaluation/precision-recall
+ 
+    Counts how many of the 10 golden signals appear in signals_flagged.
+    A signal is correctly flagged if it cleared all Branch 2 filters:
+        PRR >= 2.0, A >= 50, C >= 200, drug_total >= 1000
+ 
+    Returns summary counts and precision score.
+    Precision = flagged_golden / total_golden
+ 
+    Note: This is precision only — not recall in the classical sense.
+    We have no negative ground truth (signals that should NOT be flagged)
+    so recall cannot be computed from the golden set alone.
+ 
+    Used by: Evaluation Dashboard precision-recall table
+    """
+    placeholders = " OR ".join(
+        ["(drug_key = %s AND pt = %s)"] * len(GOLDEN_SIGNALS)
+    )
+    params = []
+    for g in GOLDEN_SIGNALS:
+        params.extend([g["drug_key"], g["pt"]])
+ 
+    conn = get_conn()
+    cur  = conn.cursor()
+ 
+    # Which golden signals are in signals_flagged
+    cur.execute(
+        f"""
+        SELECT drug_key, pt, prr, drug_reaction_count, stat_score
+        FROM signals_flagged
+        WHERE ({placeholders})
+        AND prr >= %s
+        """,
+        params + [PRR_THRESHOLD],
+    )
+    rows    = cur.fetchall()
+    columns = [desc[0].lower() for desc in cur.description]
+    cur.close()
+    conn.close()
+ 
+    flagged_signals = {
+        (row[0], row[1]): dict(zip(columns, row)) for row in rows
+    }
+ 
+    total_golden  = len(GOLDEN_SIGNALS)
+    flagged_count = len(flagged_signals)
+    not_flagged   = total_golden - flagged_count
+    precision     = round(flagged_count / total_golden, 3)
+ 
+    # Per-signal breakdown for the table
+    breakdown = []
+    for g in GOLDEN_SIGNALS:
+        key     = (g["drug_key"], g["pt"])
+        sf_row  = flagged_signals.get(key)
+        breakdown.append({
+            "drug_key"          : g["drug_key"],
+            "pt"                : g["pt"],
+            "fda_comm_label"    : g["fda_comm_label"],
+            "flagged"           : key in flagged_signals,
+            "prr"               : float(sf_row["prr"])        if sf_row else None,
+            "drug_reaction_count": int(sf_row["drug_reaction_count"]) if sf_row else None,
+            "stat_score"        : float(sf_row["stat_score"]) if sf_row else None,
+        })
+ 
+    log.info(
+        "precision_recall_computed flagged=%d total=%d precision=%.3f",
+        flagged_count, total_golden, precision,
+    )
+ 
+    return {
+        "total_golden" : total_golden,
+        "flagged"      : flagged_count,
+        "not_flagged"  : not_flagged,
+        "precision"    : precision,
+        "breakdown"    : breakdown,
+    }
