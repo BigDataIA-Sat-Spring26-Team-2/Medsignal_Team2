@@ -39,3 +39,9 @@ poetry.lock
 pyproject.toml
 
 jars/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd

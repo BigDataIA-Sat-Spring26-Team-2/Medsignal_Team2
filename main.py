@@ -22,6 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.routers.signals import router as signals_router
 from app.routers.hitl    import router as hitl_router
 from app.routers.health  import router as health_router
+from app.routers.evaluation import router as evaluation_router
 
 load_dotenv()
 
@@ -41,4 +42,4 @@ app.add_middleware(
 app.include_router(signals_router)
 app.include_router(hitl_router)
 app.include_router(health_router)
-# app.include_router(evaluation_router)  # add when evaluation.py is ready
+app.include_router(evaluation_router)
