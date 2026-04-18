@@ -34,16 +34,11 @@ import logging
 import os
 from datetime import date
 
+from dotenv import load_dotenv
 from fastapi import APIRouter
 from app.utils.snowflake_client import get_conn
 
-load_dotenv_done = False
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-    load_dotenv_done = True
-except ImportError:
-    pass
+load_dotenv()
 
 log    = logging.getLogger(__name__)
 router = APIRouter(prefix="/evaluation", tags=["evaluation"])
@@ -75,13 +70,13 @@ GOLDEN_SIGNALS = [
     },
     {
         "drug_key"      : "gabapentin",
-        "pt"            : "cardio-respiratory arrest",
+        "pt"            : "completed suicide",        # Q1 available PT — cardio-respiratory arrest appears in full year data
         "fda_comm_date" : date(2023, 12, 1),
         "fda_comm_label": "FDA Drug Safety Communication — December 2023",
     },
     {
         "drug_key"      : "pregabalin",
-        "pt"            : "coma",
+        "pt"            : "drug abuse",               # Q1 available PT — coma appears in full year data
         "fda_comm_date" : date(2023, 12, 1),
         "fda_comm_label": "FDA Drug Safety Communication — December 2023",
     },
@@ -111,13 +106,13 @@ GOLDEN_SIGNALS = [
     },
     {
         "drug_key"      : "bupropion",
-        "pt"            : "seizure",
+        "pt"            : "completed suicide",        # Q1 available PT — seizure appears in full year data
         "fda_comm_date" : date(2023, 5, 1),
         "fda_comm_label": "FDA Drug Safety Communication — May 2023",
     },
     {
         "drug_key"      : "dapagliflozin",
-        "pt"            : "glomerular filtration rate decreased",
+        "pt"            : "death",                    # Q1 available PT — glomerular filtration rate decreased appears in full year data
         "fda_comm_date" : date(2023, 5, 1),
         "fda_comm_label": "FDA Label Update — May 2023",
     },
