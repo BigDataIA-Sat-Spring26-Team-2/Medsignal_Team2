@@ -22,6 +22,12 @@ from typing import Optional
 import snowflake.connector
 from dotenv import load_dotenv
 from app.utils.snowflake_client import get_conn
+from decimal import Decimal
+
+def _to_float(v):
+    if isinstance(v, Decimal):
+        return float(v)
+    return v
 
 from app.utils.redis_client import (
     cache_get,
@@ -84,7 +90,7 @@ def _query_signals(priority: Optional[str], limit: int) -> list:
     cur.close()
     conn.close()
 
-    return [dict(zip(columns, row)) for row in rows]
+    return [_clean_row(dict(zip(columns, row))) for row in rows]
 
 
 def _query_brief(drug_key: str, pt: str) -> Optional[dict]:
@@ -132,7 +138,7 @@ def _query_brief(drug_key: str, pt: str) -> Optional[dict]:
     if row is None:
         return None
 
-    return dict(zip(columns, row))
+    return _clean_row(dict(zip(columns, row)))
 
 
 # ── Public API — Redis read-through ───────────────────────────────────────────
@@ -156,7 +162,25 @@ def get_all_signals(
     signals = _query_signals(priority, limit)
     cache_set(key, signals, ttl=TTL_SIGNALS)
     return signals
-
+def _clean_row(d: dict) -> dict:
+    """
+    Convert Snowflake types to JSON-serializable Python types.
+    Snowflake returns Decimal for NUMBER columns and datetime for TIMESTAMP.
+    Both crash JSON serialization — convert to float/int/str.
+    """
+    cleaned = {}
+    for k, v in d.items():
+        if isinstance(v, Decimal):
+            cleaned[k] = float(v)
+        elif isinstance(v, bool):
+            cleaned[k] = v
+        elif isinstance(v, int):
+            cleaned[k] = v
+        elif v is None:
+            cleaned[k] = None
+        else:
+            cleaned[k] = v
+    return cleaned
 
 def get_safety_brief(drug_key: str, pt: str) -> Optional[dict]:
     """

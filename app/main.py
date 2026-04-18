@@ -37,7 +37,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
+@app.get("/")
+def root():
+    return {"service": "MedSignal API", "version": "1.0.0", "docs": "/docs"}
 app.include_router(signals_router)
 app.include_router(hitl_router)
 app.include_router(health_router)
