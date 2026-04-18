@@ -8,7 +8,6 @@ state. abstracts and lit_score come from Agent 2.
 The local _compute_stat_score() fallback only fires if Agent 1 has not run.
 Retry logic: one retry on Pydantic failure with the validation error in prompt.
 On second failure: writes generation_error=True so HITL still sees the signal.
-
 """
 
 import json
@@ -57,8 +56,6 @@ class SafetyBriefOutput(BaseModel):
     generated_at      : str
 
 
-
-
 # ── Priority tier ─────────────────────────────────────────────────────────────
 # Proposal p28. StatScore and LitScore evaluated independently — never combined.
 
@@ -94,6 +91,27 @@ def _compute_stat_score(
 
 def _normalize_action(raw: dict) -> dict:
     action = str(raw.get("recommended_action", "")).upper().strip()
+
+    # Hard guard — empty string or whitespace-only must not reach Pydantic.
+    # This happens when GPT-4o returns the JSON template placeholder text
+    # ("WITHDRAW or RESTRICT or LABEL_UPDATE or MONITOR") or an empty field.
+    if not action:
+        raw["recommended_action"] = "MONITOR"
+        log.warning(
+            "recommended_action was empty — defaulting to MONITOR"
+        )
+        return raw
+
+    # Template placeholder — GPT-4o occasionally returns the example string
+    # from the prompt verbatim. Treat as no decision made → MONITOR.
+    if "OR" in action and len(action) > 20:
+        raw["recommended_action"] = "MONITOR"
+        log.warning(
+            "recommended_action looked like a template placeholder '%s' "
+            "— defaulting to MONITOR",
+            action[:60],
+        )
+        return raw
 
     if action in _VALID_ACTIONS:
         return raw
@@ -155,13 +173,28 @@ def _format_abstracts(abstracts: list) -> str:
         )
     return "\n\n".join(lines)
 
-#Handled agent hallucinations in pmids_cited 
+
 def _build_prompt(state: dict, priority: str) -> str:
     retrieved_pmids = [a.get("pmid", "") for a in (state.get("abstracts") or [])]
+
+    # Build a prominent outcome context line so GPT-4o cannot miss deaths
+    outcome_parts = []
+    if state["death_count"] > 0:
+        outcome_parts.append(f"{state['death_count']} deaths")
+    if state["lt_count"] > 0:
+        outcome_parts.append(f"{state['lt_count']} life-threatening events")
+    if state["hosp_count"] > 0:
+        outcome_parts.append(f"{state['hosp_count']} hospitalisations")
+    outcome_line = (
+        f"Serious outcomes: {', '.join(outcome_parts)}"
+        if outcome_parts
+        else "Serious outcomes: none reported"
+    )
+
     return f"""Drug: {state["drug_key"]}
 Reaction (MedDRA PT): {state["pt"]}
 PRR: {state["prr"]:.2f} | Cases: {state["case_count"]}
-Deaths: {state["death_count"]} | Hospitalizations: {state["hosp_count"]} | Life-threatening: {state["lt_count"]}
+{outcome_line}
 StatScore: {state["stat_score"]:.4f} | LitScore: {state["lit_score"]:.4f}
 Priority: {priority}
 
@@ -171,12 +204,37 @@ Do not cite any PMID not in this list. If no PMID is relevant, leave pmids_cited
 Retrieved abstracts — cite using [PMID:xxxxxxxx] inline in brief_text:
 {_format_abstracts(state.get("abstracts") or [])}
 
+Select recommended_action using this clinical decision framework.
+Apply it strictly — do not default to MONITOR unless none of the other criteria are met:
+
+WITHDRAW     : Deaths reported AND PRR > 10 AND literature confirms direct
+               causal mechanism with no adequate risk mitigation possible.
+               Reserve for signals where continued use poses immediate risk
+               that outweighs all clinical benefit.
+
+RESTRICT     : Serious outcomes present (deaths OR life-threatening events)
+               AND PRR > 5 AND literature supports limiting use to specific
+               populations or with mandatory risk mitigation
+               (e.g. contraindicated in renal failure, pregnancy, or
+               with specific co-medications).
+
+LABEL_UPDATE : PRR > 2 AND reaction is not adequately described in current
+               labeling, OR new epidemiological evidence strengthens a known
+               but under-documented risk. Applies even when outcomes are not
+               life-threatening if signal frequency and PRR justify updated
+               prescriber guidance. This is the most common appropriate action
+               for a statistically significant P1 or P2 signal.
+
+MONITOR      : Reaction is already adequately labeled, OR evidence is
+               insufficient for regulatory action, OR reaction is mild and
+               self-limiting with no serious outcomes and PRR below 3.
+
 Return ONLY a JSON object. No markdown, no explanation, no extra text.
 {{
-    "brief_text": "2-3 paragraph clinical narrative. Cite PMIDs inline.",
+    "brief_text": "2-3 paragraph clinical narrative justifying the recommended action. Cite PMIDs inline.",
     "key_findings": ["finding 1", "finding 2", "finding 3"],
     "pmids_cited": ["pmid1", "pmid2"],
-    "recommended_action": "MONITOR or LABEL_UPDATE or RESTRICT or WITHDRAW",
+    "recommended_action": "LABEL_UPDATE",
     "drug_key": "{state["drug_key"]}",
     "pt": "{state["pt"]}",
     "stat_score": {state["stat_score"]:.4f},
