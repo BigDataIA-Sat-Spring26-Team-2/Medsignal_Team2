@@ -30,7 +30,7 @@ import time
 from Bio import Entrez
 from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer
-from utils.chromadb_client import get_client, get_collection
+from app.utils.chromadb_client import get_client, get_collection
 
 load_dotenv()
 
