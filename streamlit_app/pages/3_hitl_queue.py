@@ -577,6 +577,7 @@ st.markdown(f"""
         <a class="ms-navlink" href="/signal_detail">Signal Detail</a>
         <a class="ms-navlink active" href="/hitl_queue">Review Queue</a>
         <a class="ms-navlink" href="/evaluation">Evaluation</a>
+        <a class="ms-navlink" href="/metrics">Metrics</a>
     </nav>
     <div class="ms-live">
         <div class="ms-live-dot"></div>

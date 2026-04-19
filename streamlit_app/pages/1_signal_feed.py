@@ -440,7 +440,7 @@ html, body, .stApp {
 
 def fetch_signals():
     try:
-        r = requests.get(f"{API_BASE}/signals", timeout=15)
+        r = requests.get(f"{API_BASE}/signals", timeout=60)
         r.raise_for_status()
         return r.json()
     except requests.exceptions.ConnectionError:
@@ -498,6 +498,7 @@ st.markdown(f"""
         <a class="ms-navlink" href="/signal_detail">Signal Detail</a>
         <a class="ms-navlink" href="/hitl_queue">Review Queue</a>
         <a class="ms-navlink" href="/evaluation">Evaluation</a>
+        <a class="ms-navlink" href="/metrics">Metrics</a>
     </nav>
     <div class="ms-live">
         <div class="ms-live-dot"></div>
