@@ -17,25 +17,15 @@ Design:
 
 import logging
 from datetime import datetime, timezone
-from typing import Optional
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
 
+from app.models.hitl import HITLDecision
 from app.utils.snowflake_client import get_conn
 from app.utils.redis_client import set_queue_depth
 
 log    = logging.getLogger(__name__)
 router = APIRouter(prefix="/hitl", tags=["hitl"])
-
-# ── Request schema ────────────────────────────────────────────────────────────
-
-class HITLDecision(BaseModel):
-    drug_key     : str
-    pt           : str
-    decision     : str   # APPROVE / REJECT / ESCALATE
-    reviewer_note: Optional[str] = None
-    brief_id     : Optional[int] = None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

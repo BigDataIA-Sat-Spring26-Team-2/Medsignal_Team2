@@ -15,15 +15,16 @@ import logging
 import math
 import os
 from datetime import datetime, timezone
-from typing import List, Literal, Optional
+from typing import List, Optional
 from app.utils.redis_client import invalidate_brief
 from app.utils.snowflake_client import get_conn
 
 from dotenv import load_dotenv
 from openai import OpenAI
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import ValidationError
 
 from app.agents.state import SignalState
+from app.models.brief import SafetyBriefOutput
 
 load_dotenv()
 
@@ -36,24 +37,6 @@ MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 # Valid recommended_action values — used for normalization before Pydantic.
 _VALID_ACTIONS = {"MONITOR", "LABEL_UPDATE", "RESTRICT", "WITHDRAW"}
-
-
-# ── Pydantic schema ───────────────────────────────────────────────────────────
-# Every GPT-4o response is validated against this before being written.
-# recommended_action is str here — _normalize_action() maps GPT-4o prose
-# to one of the four valid values before this schema runs.
-
-class SafetyBriefOutput(BaseModel):
-    brief_text        : str
-    key_findings      : List[str]
-    pmids_cited       : List[str]
-    recommended_action: Literal["MONITOR", "LABEL_UPDATE", "RESTRICT", "WITHDRAW"]
-    drug_key          : str
-    pt                : str
-    stat_score        : float = Field(ge=0.0, le=1.0)
-    lit_score         : float = Field(ge=0.0, le=1.0)
-    priority          : Literal["P1", "P2", "P3", "P4"]
-    generated_at      : str
 
 
 # ── Priority tier ─────────────────────────────────────────────────────────────
