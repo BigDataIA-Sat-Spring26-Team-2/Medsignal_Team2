@@ -356,6 +356,13 @@ if results:
         width=0.55,
     ))
 
+    fig.update_traces(
+        hoverlabel_align="left",
+        hovertemplate="%{customdata}<extra></extra>",
+        customdata=hover_texts,
+        width=0.55,
+    )
+
     # Median line
     if median_lead:
         fig.add_hline(
@@ -411,8 +418,8 @@ if results:
     fig.update_layout(
         paper_bgcolor="#0E1421",
         plot_bgcolor ="rgba(0,0,0,0)",
-        height=380,
-        margin=dict(l=0, r=0, t=40, b=0),   # ← increase t from 16 to 40 to give legend room
+        height=520,
+        margin=dict(l=20, r=200, t=40, b=0), 
         xaxis=dict(
             tickfont=dict(family="JetBrains Mono", size=12, color="#9BAEC8"),
             gridcolor="rgba(255,255,255,0.04)",
@@ -430,11 +437,12 @@ if results:
             bgcolor="#141C2E",
             bordercolor="rgba(255,255,255,0.10)",
             font=dict(family="Inter", size=13, color="#EEF2FF"),
+            namelength=-1,  
         ),
         showlegend=False,
-        annotations=[                          # ← add this
+        annotations=[                         
             dict(
-                x=0.01, y=1.06, xref="paper", yref="paper",
+                x=0.00, y=1.06, xref="paper", yref="paper",
                 text="<b style='color:#22C55E'>■</b> Detected before FDA  &nbsp;&nbsp;"
                     "<b style='color:#F72A2A'>■</b> Detected after FDA  &nbsp;&nbsp;"
                     "<b style='color:#4A5D7A'>■</b> Not detected",
@@ -443,6 +451,7 @@ if results:
                 align="left",
             )
         ],
+        hovermode="closest",
     )
 
     # Chart in styled container
