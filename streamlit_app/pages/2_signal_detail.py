@@ -506,7 +506,15 @@ def trigger_investigate(drug_key: str, pt: str) -> bool:
         encoded_pt   = quote(pt, safe="")
         url = f"{API_BASE}/signals/{encoded_drug}/{encoded_pt}/investigate"
         r = requests.post(url, timeout=300)
-        return r.status_code == 200
+        if r.status_code == 200:
+            # Bust Redis signal cache so next fetch hits Snowflake fresh
+            # Without this, Redis serves stale counts for up to 5 minutes
+            try:
+                requests.post(f"{API_BASE}/signals/cache/invalidate", timeout=10)
+            except Exception:
+                pass  # non-critical — cache will expire naturally
+            return True
+        return False
     except Exception as e:
         print(f"INVESTIGATE EXCEPTION: {type(e).__name__}: {e}")
         return False
