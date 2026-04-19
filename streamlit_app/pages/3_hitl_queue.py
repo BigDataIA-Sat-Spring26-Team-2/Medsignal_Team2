@@ -573,7 +573,7 @@ st.markdown(f"""
 <div class="ms-topbar">
     <div class="ms-brand">Med<span>Signal</span></div>
     <nav class="ms-nav">
-        <a class="ms-navlink" href="/signal_feed">Signal Feed</a>
+        <a class="ms-navlink" href="/1_signal_feed">Signal Feed</a>
         <a class="ms-navlink" href="/signal_detail">Signal Detail</a>
         <a class="ms-navlink active" href="/hitl_queue">Review Queue</a>
         <a class="ms-navlink" href="/evaluation">Evaluation</a>

@@ -440,7 +440,7 @@ html, body, .stApp {
 
 def fetch_signals():
     try:
-        r = requests.get(f"{API_BASE}/signals", timeout=15)
+        r = requests.get(f"{API_BASE}/signals", timeout=60)
         r.raise_for_status()
         return r.json()
     except requests.exceptions.ConnectionError:
