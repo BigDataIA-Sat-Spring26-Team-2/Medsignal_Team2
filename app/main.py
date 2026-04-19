@@ -8,7 +8,7 @@ Routers:
     /health      — Snowflake connectivity check
 
 Run:
-    poetry run uvicorn main:app --reload --port 8000
+    poetry run uvicorn app.main:app --reload --port 8000
 
 Docs:
     http://localhost:8000/docs      — Swagger UI
@@ -38,8 +38,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
+@app.get("/")
+def root():
+    return {"service": "MedSignal API", "version": "1.0.0", "docs": "/docs"}
 app.include_router(signals_router)
 app.include_router(hitl_router)
 app.include_router(health_router)
+# app.include_router(evaluation_router)  # add when evaluation.py is ready
 app.include_router(evaluation_router)
