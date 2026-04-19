@@ -572,3 +572,88 @@ st.markdown(f"""
     <div class="ms-timestamp">Last updated {ts}</div>
 </div>
 """, unsafe_allow_html=True)
+
+# ── Agent Pipeline Behavior ───────────────────────────────────────────────────
+
+agent_m = data.get("agent_metrics", {})
+total_runs    = int(agent_m.get("total_pipeline_runs", 0))
+tokens_in     = int(agent_m.get("total_tokens_input", 0))
+tokens_out    = int(agent_m.get("total_tokens_output", 0))
+cost_usd      = float(agent_m.get("estimated_cost_usd", 0))
+avg_lit       = float(agent_m.get("avg_lit_score", 0))
+zero_lit      = int(agent_m.get("zero_lit_score_runs", 0))
+gen_errors    = int(agent_m.get("generation_errors", 0))
+retries       = int(agent_m.get("pydantic_retries", 0))
+cit_removed   = int(agent_m.get("citations_removed", 0))
+avg_duration  = float(agent_m.get("avg_pipeline_duration_s", 0))
+
+st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
+st.markdown(f"""
+<div class="ms-panel">
+    <div class="ms-panel-title">Agent Pipeline Behavior</div>
+    <div class="ms-bar-row">
+        <div class="ms-bar-label">Total Runs</div>
+        <div class="ms-bar-track">
+            <div class="ms-bar-fill" style="width:100%;background:#3B82F6;"></div>
+        </div>
+        <div class="ms-bar-val">{total_runs:,}</div>
+    </div>
+    <div class="ms-bar-row">
+        <div class="ms-bar-label">Avg LitScore</div>
+        <div class="ms-bar-track">
+            <div class="ms-bar-fill" style="width:{avg_lit*100:.1f}%;background:#8B5CF6;"></div>
+        </div>
+        <div class="ms-bar-val">{avg_lit:.3f}</div>
+    </div>
+    <div class="ms-bar-row">
+        <div class="ms-bar-label">Zero Lit Runs</div>
+        <div class="ms-bar-track">
+            <div class="ms-bar-fill" style="width:{pct(zero_lit,max(total_runs,1)):.1f}%;background:#F97316;"></div>
+        </div>
+        <div class="ms-bar-val">{zero_lit:,} <span class="ms-bar-dim">{pct(zero_lit,max(total_runs,1)):.1f}%</span></div>
+    </div>
+    <div class="ms-bar-row">
+        <div class="ms-bar-label">Gen Errors</div>
+        <div class="ms-bar-track">
+            <div class="ms-bar-fill" style="width:{pct(gen_errors,max(total_runs,1)):.1f}%;background:#F72A2A;"></div>
+        </div>
+        <div class="ms-bar-val">{gen_errors:,} <span class="ms-bar-dim">{pct(gen_errors,max(total_runs,1)):.1f}%</span></div>
+    </div>
+    <div class="ms-bar-row">
+        <div class="ms-bar-label">Retries</div>
+        <div class="ms-bar-track">
+            <div class="ms-bar-fill" style="width:{pct(retries,max(total_runs,1)):.1f}%;background:#EAB308;"></div>
+        </div>
+        <div class="ms-bar-val">{retries:,}</div>
+    </div>
+    <div class="ms-bar-row">
+        <div class="ms-bar-label">Citations Removed</div>
+        <div class="ms-bar-track">
+            <div class="ms-bar-fill" style="width:{pct(cit_removed,max(total_runs,1)):.1f}%;background:#F72A2A;"></div>
+        </div>
+        <div class="ms-bar-val">{cit_removed:,}</div>
+    </div>
+    <div class="ms-bar-row">
+        <div class="ms-bar-label">Tokens In</div>
+        <div class="ms-bar-track">
+            <div class="ms-bar-fill" style="width:100%;background:#60A5FA;"></div>
+        </div>
+        <div class="ms-bar-val">{tokens_in:,}</div>
+    </div>
+    <div class="ms-bar-row">
+        <div class="ms-bar-label">Tokens Out</div>
+        <div class="ms-bar-track">
+            <div class="ms-bar-fill" style="width:100%;background:#34D399;"></div>
+        </div>
+        <div class="ms-bar-val">{tokens_out:,}</div>
+    </div>
+    <div class="ms-bar-row">
+        <div class="ms-bar-label">Est. Cost</div>
+        <div class="ms-bar-track">
+            <div class="ms-bar-fill" style="width:100%;background:#FACC15;"></div>
+        </div>
+        <div class="ms-bar-val">${cost_usd:.4f}</div>
+    </div>
+</div>
+""", unsafe_allow_html=True)

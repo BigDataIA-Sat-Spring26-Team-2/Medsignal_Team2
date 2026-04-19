@@ -1975,6 +1975,32 @@ gmpy = ["gmpy2 (>=2.1.0a4) ; platform_python_implementation != \"PyPy\""]
 tests = ["pytest (>=4.6)"]
 
 [[package]]
+name = "narwhals"
+version = "2.19.0"
+description = "Extremely lightweight compatibility layer between dataframe libraries"
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+files = [
+    {file = "narwhals-2.19.0-py3-none-any.whl", hash = "sha256:1f8dfa4a33a6dbff878c3e9be4c3b455dfcaf2a9322f1357db00e4e92e95b84b"},
+    {file = "narwhals-2.19.0.tar.gz", hash = "sha256:14fd7040b5ff211d415a82e4827b9d04c354e213e72a6d0730205ffd72e3b7ff"},
+]
+
+[package.extras]
+cudf = ["cudf-cu12 (>=24.10.0)"]
+dask = ["dask[dataframe] (>=2024.8)"]
+duckdb = ["duckdb (>=1.1)"]
+ibis = ["ibis-framework (>=6.0.0)", "packaging", "pyarrow-hotfix", "rich"]
+modin = ["modin"]
+pandas = ["pandas (>=1.1.3)"]
+polars = ["polars (>=0.20.4)"]
+pyarrow = ["pyarrow (>=13.0.0)"]
+pyspark = ["pyspark (>=3.5.0)"]
+pyspark-connect = ["pyspark[connect] (>=3.5.0)"]
+sql = ["duckdb (>=1.1)", "sqlparse"]
+sqlframe = ["sqlframe (>=3.22.0,!=3.39.3)"]
+
+[[package]]
 name = "networkx"
 version = "3.6.1"
 description = "Python package for creating and manipulating graphs and networks"
@@ -2880,6 +2906,30 @@ files = [
 ]
 
 [[package]]
+name = "plotly"
+version = "6.7.0"
+description = "An open-source interactive data visualization library for Python"
+optional = false
+python-versions = ">=3.8"
+groups = ["main"]
+files = [
+    {file = "plotly-6.7.0-py3-none-any.whl", hash = "sha256:ac8aca1c25c663a59b5b9140a549264a5badde2e057d79b8c772ae2920e32ff0"},
+    {file = "plotly-6.7.0.tar.gz", hash = "sha256:45eea0ff27e2a23ccd62776f77eb43aa1ca03df4192b76036e380bb479b892c6"},
+]
+
+[package.dependencies]
+narwhals = ">=1.15.1"
+packaging = "*"
+
+[package.extras]
+dev = ["anywidget", "build", "colorcet", "fiona (<=1.9.6) ; python_version <= \"3.8\"", "geopandas", "inflect", "jupyterlab", "kaleido (>=1.1.0)", "numpy (>=1.22)", "orjson", "pandas", "pdfrw", "pillow", "plotly-geo", "polars[timezone]", "pyarrow", "pyshp", "pytest", "pytz", "requests", "ruff (==0.11.12)", "scikit-image", "scipy", "shapely", "statsmodels", "vaex ; python_version <= \"3.9\"", "xarray"]
+dev-build = ["build", "jupyterlab", "pytest", "requests", "ruff (==0.11.12)"]
+dev-core = ["pytest", "requests", "ruff (==0.11.12)"]
+dev-optional = ["anywidget", "build", "colorcet", "fiona (<=1.9.6) ; python_version <= \"3.8\"", "geopandas", "inflect", "jupyterlab", "kaleido (>=1.1.0)", "numpy (>=1.22)", "orjson", "pandas", "pdfrw", "pillow", "plotly-geo", "polars[timezone]", "pyarrow", "pyshp", "pytest", "pytz", "requests", "ruff (==0.11.12)", "scikit-image", "scipy", "shapely", "statsmodels", "vaex ; python_version <= \"3.9\"", "xarray"]
+express = ["numpy (>=1.22)"]
+kaleido = ["kaleido (>=1.1.0)"]
+
+[[package]]
 name = "pluggy"
 version = "1.6.0"
 description = "plugin and hook calling mechanisms for python"
@@ -2894,6 +2944,23 @@ files = [
 [package.extras]
 dev = ["pre-commit", "tox"]
 testing = ["coverage", "pytest", "pytest-benchmark"]
+
+[[package]]
+name = "prometheus-client"
+version = "0.25.0"
+description = "Python client for the Prometheus monitoring system."
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+files = [
+    {file = "prometheus_client-0.25.0-py3-none-any.whl", hash = "sha256:d5aec89e349a6ec230805d0df882f3807f74fd6c1a2fa86864e3c2279059fed1"},
+    {file = "prometheus_client-0.25.0.tar.gz", hash = "sha256:5e373b75c31afb3c86f1a52fa1ad470c9aace18082d39ec0d2f918d11cc9ba28"},
+]
+
+[package.extras]
+aiohttp = ["aiohttp"]
+django = ["django"]
+twisted = ["twisted"]
 
 [[package]]
 name = "protobuf"
@@ -5488,4 +5555,4 @@ cffi = ["cffi (>=1.17,<2.0) ; platform_python_implementation != \"PyPy\" and pyt
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.13"
-content-hash = "368f6614164c9d4ecbcb665fb7b6d081d70e1a2434e51d0a45fccfda1ea30c4f"
+content-hash = "9e8192cdf61de4a343adddc331d59e7f374b4b70af74928cc777fcd31a0da065"
