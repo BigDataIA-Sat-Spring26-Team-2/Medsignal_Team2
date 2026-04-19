@@ -379,42 +379,6 @@ if results:
     # Zero line
     fig.add_hline(y=0, line_color="rgba(255,255,255,0.15)", line_width=1)
 
-    # fig.update_layout(
-    #     paper_bgcolor="#0E1421",
-    #     plot_bgcolor ="rgba(0,0,0,0)",
-    #     height=380,
-    #     margin=dict(l=24, r=24, t=16, b=8),
-    #     xaxis=dict(
-    #         tickfont=dict(family="JetBrains Mono", size=12, color="#9BAEC8"),
-    #         gridcolor="rgba(255,255,255,0.04)",
-    #         showgrid=False,
-    #         zeroline=False,
-    #     ),
-    #     yaxis=dict(
-    #         title="Days before FDA communication",
-    #         title_font=dict(family="JetBrains Mono", size=11, color="#5E7498"),
-    #         tickfont=dict(family="JetBrains Mono", size=11, color="#5E7498"),
-    #         gridcolor="rgba(255,255,255,0.05)",
-    #         zeroline=False,
-    #     ),
-    #     hoverlabel=dict(
-    #         bgcolor="#141C2E",
-    #         bordercolor="rgba(255,255,255,0.10)",
-    #         font=dict(family="Inter", size=13, color="#EEF2FF"),
-    #     ),
-    #     showlegend=False,
-    #     annotations=[
-    #         dict(
-    #             x=0.01, y=1.06, xref="paper", yref="paper",
-    #             text="<b style='color:#22C55E'>■</b> Detected before FDA  &nbsp;&nbsp;"
-    #                 "<b style='color:#F72A2A'>■</b> Detected after FDA  &nbsp;&nbsp;"
-    #                 "<b style='color:#4A5D7A'>■</b> Not detected",
-    #             showarrow=False,
-    #             font=dict(family="JetBrains Mono", size=11, color="#9BAEC8"),
-    #             align="left",
-    #         )
-    #     ]
-    # )
     fig.update_layout(
         paper_bgcolor="#0E1421",
         plot_bgcolor ="rgba(0,0,0,0)",
@@ -455,20 +419,6 @@ if results:
     )
 
     # Chart in styled container
-#     st.markdown("""
-# <div style="max-width:1100px;margin:0 auto;padding:0 56px 0;">
-#     <div class="ms-chart-wrap">
-# """, unsafe_allow_html=True)
-#     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-#     st.markdown("</div></div>", unsafe_allow_html=True)
-    # st.markdown("""
-    # <div style="max-width:1100px;margin:0 auto;padding:0 56px 0;">
-    #     <div class="ms-chart-wrap">
-    #     </div>
-    # </div>
-    # """, unsafe_allow_html=True)
-    # st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
