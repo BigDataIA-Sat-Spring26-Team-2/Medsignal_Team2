@@ -37,34 +37,54 @@ def list_signals(
     return get_all_signals(priority=priority, limit=limit)
 
 
+# @router.post("/{drug_key}/{pt}/investigate")
+# def investigate(drug_key: str, pt: str):
+#     """
+#     Triggers on-demand agent pipeline for one signal.
+#     Called by Streamlit Signal Detail page when analyst clicks Investigate.
+#     Auto-fetches PubMed abstracts if ChromaDB missing for this drug.
+#     Returns priority and status after pipeline completes.
+#     """
+#     from app.agents.pipeline import run_single_signal
+
+#     try:
+#         result = run_single_signal(drug_key, pt)
+#         return {
+#             "priority": result.get("priority"),
+#             "status"  : "complete",
+#             "error"   : result.get("error"),
+#         }
+#     except ValueError as e:
+#         raise HTTPException(
+#             status_code=404,
+#             detail=str(e),
+#         )
+#     except Exception as e:
+#         raise HTTPException(
+#             status_code=500,
+#             detail=f"Pipeline failed: {e}",
+#         )
 @router.post("/{drug_key}/{pt}/investigate")
-def investigate(drug_key: str, pt: str):
-    """
-    Triggers on-demand agent pipeline for one signal.
-    Called by Streamlit Signal Detail page when analyst clicks Investigate.
-    Auto-fetches PubMed abstracts if ChromaDB missing for this drug.
-    Returns priority and status after pipeline completes.
-    """
+async def investigate(drug_key: str, pt: str):
+    import asyncio
     from app.agents.pipeline import run_single_signal
 
     try:
-        result = run_single_signal(drug_key, pt)
+        # Run blocking pipeline in a thread pool so FastAPI stays responsive
+        loop   = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None, run_single_signal, drug_key, pt
+        )
+        print(f"INVESTIGATE RESULT: priority={result.get('priority')} error={result.get('error')}")
         return {
             "priority": result.get("priority"),
             "status"  : "complete",
             "error"   : result.get("error"),
         }
     except ValueError as e:
-        raise HTTPException(
-            status_code=404,
-            detail=str(e),
-        )
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Pipeline failed: {e}",
-        )
-
+        raise HTTPException(status_code=500, detail=f"Pipeline failed: {e}")
 
 @router.get("/{drug_key}/{pt}/brief")
 def get_brief(drug_key: str, pt: str):

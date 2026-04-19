@@ -8,7 +8,7 @@ Routers:
     /health      — Snowflake connectivity check
 
 Run:
-    poetry run uvicorn main:app --reload --port 8000
+    poetry run uvicorn app.main:app --reload --port 8000
 
 Docs:
     http://localhost:8000/docs      — Swagger UI

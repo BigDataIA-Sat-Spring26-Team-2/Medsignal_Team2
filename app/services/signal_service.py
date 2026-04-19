@@ -162,19 +162,30 @@ def get_all_signals(
     signals = _query_signals(priority, limit)
     cache_set(key, signals, ttl=TTL_SIGNALS)
     return signals
+
+
 def _clean_row(d: dict) -> dict:
     """
     Convert Snowflake types to JSON-serializable Python types.
-    Snowflake returns Decimal for NUMBER columns and datetime for TIMESTAMP.
-    Both crash JSON serialization — convert to float/int/str.
+    VARIANT columns (key_findings, pmids_cited) come back as
+    raw JSON strings — parse them into Python lists.
     """
     cleaned = {}
     for k, v in d.items():
         if isinstance(v, Decimal):
             cleaned[k] = float(v)
+        elif k in ("key_findings", "pmids_cited"):
+            # Snowflake VARIANT — may be string or already parsed
+            if isinstance(v, str):
+                try:
+                    cleaned[k] = json.loads(v)
+                except Exception:
+                    cleaned[k] = []
+            elif isinstance(v, list):
+                cleaned[k] = v
+            else:
+                cleaned[k] = []
         elif isinstance(v, bool):
-            cleaned[k] = v
-        elif isinstance(v, int):
             cleaned[k] = v
         elif v is None:
             cleaned[k] = None
