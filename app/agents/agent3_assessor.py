@@ -31,16 +31,11 @@ load_dotenv()
 log    = logging.getLogger(__name__)
 client = OpenAI()
 
-# Use gpt-4o-mini during development — switch to gpt-4o for the final
-# evaluation run by setting OPENAI_MODEL=gpt-4o in .env.
 MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-
-# Valid recommended_action values — used for normalization before Pydantic.
 _VALID_ACTIONS = {"MONITOR", "LABEL_UPDATE", "RESTRICT", "WITHDRAW"}
 
 
 # ── Priority tier ─────────────────────────────────────────────────────────────
-# Proposal p28. StatScore and LitScore evaluated independently — never combined.
 
 def assign_priority(stat_score: float, lit_score: float) -> str:
     if stat_score >= 0.7 and lit_score >= 0.5:
@@ -53,8 +48,6 @@ def assign_priority(stat_score: float, lit_score: float) -> str:
 
 
 # ── StatScore fallback ────────────────────────────────────────────────────────
-# Only called when Agent 1 has not populated stat_score in state.
-# Uses the same formula as Branch 2 so values are consistent.
 
 def _compute_stat_score(
     prr: float, case_count: int,
@@ -67,22 +60,15 @@ def _compute_stat_score(
 
 
 # ── Action normalization ──────────────────────────────────────────────────────
-# GPT-4o sometimes returns prose like "Escalate for pharmacovigilance review"
-# instead of one of the four exact Literal values. This maps common variants
-# to valid values before Pydantic validation runs, preventing generation_error
-# on every signal.
 
 def _normalize_action(raw: dict) -> dict:
     action = str(raw.get("recommended_action", "")).upper().strip()
 
-    # Hard guard — empty string or whitespace-only must not reach Pydantic.
     if not action:
         raw["recommended_action"] = "MONITOR"
         log.warning("recommended_action was empty — defaulting to MONITOR")
         return raw
 
-    # Template placeholder — GPT-4o occasionally returns the example string
-    # from the prompt verbatim. Treat as no decision made → MONITOR.
     if "OR" in action and len(action) > 20:
         raw["recommended_action"] = "MONITOR"
         log.warning(
@@ -114,8 +100,6 @@ def _normalize_action(raw: dict) -> dict:
 
 
 # ── Citation guard ────────────────────────────────────────────────────────────
-# Every PMID in pmids_cited must appear in the set Agent 2 actually retrieved.
-# Anything else is a hallucination — strip it before writing to Snowflake.
 
 def _validate_citations(
     brief: SafetyBriefOutput,
@@ -123,7 +107,9 @@ def _validate_citations(
 ) -> SafetyBriefOutput:
     def normalize(p: str) -> str:
         return p.strip().lstrip("PMID:").strip()
+
     retrieved  = {normalize(p) for p in retrieved_pmids}
+    pre_count  = len(brief.pmids_cited)
     cleaned    = [p for p in brief.pmids_cited if normalize(p) in retrieved]
     fabricated = set(brief.pmids_cited) - set(cleaned)
 
@@ -132,14 +118,19 @@ def _validate_citations(
             "Stripped %d fabricated PMID(s) from %s x %s: %s",
             len(fabricated), brief.drug_key, brief.pt, fabricated,
         )
+
+    updated = brief.model_copy(update={"pmids_cited": cleaned})
+
+    # Observability — inside try/except so metrics failure never breaks pipeline
     try:
         from app.observability.metrics import AGENT3_CITATIONS_REMOVED
-        removed = pre_count - len(brief.pmids_cited)
+        removed = pre_count - len(updated.pmids_cited)
         if removed > 0:
             AGENT3_CITATIONS_REMOVED.inc(removed)
     except Exception:
         pass
-    return brief.model_copy(update={"pmids_cited": cleaned})
+
+    return updated
 
 
 # ── Prompt construction ───────────────────────────────────────────────────────
@@ -165,7 +156,6 @@ def _build_prompt(state: dict, priority: str) -> str:
     hosp  = int(state.get("hosp_count")  or 0)
     prr   = float(state.get("prr") or 0)
 
-    # Prominent outcome line — GPT-4o must not miss deaths
     outcome_parts = []
     if death > 0:
         outcome_parts.append(f"{death} deaths")
@@ -179,8 +169,6 @@ def _build_prompt(state: dict, priority: str) -> str:
         else "Serious outcomes: none reported"
     )
 
-    # Decision hint — pre-compute which criteria are met so GPT-4o
-    # cannot miss them. This is not the final decision — it is guidance.
     hints = []
     if death > 0 and prr > 10:
         hints.append(
@@ -247,16 +235,16 @@ MONITOR : Use MONITOR when ALL of the following are true:
           If deaths are present, MONITOR is never appropriate.
 
 Worked examples to calibrate your decision:
-  dapagliflozin x death      | deaths=33, PRR=2.98  → RESTRICT
-  bupropion x completed suicide | deaths=76, PRR=17.84 → RESTRICT
-  metformin x lactic acidosis | deaths present, PRR=4.2 → RESTRICT
+  dapagliflozin x death         | deaths=33, PRR=2.98   → RESTRICT
+  bupropion x completed suicide | deaths=76, PRR=17.84  → RESTRICT
+  metformin x lactic acidosis   | deaths present, PRR=4.2 → RESTRICT
   empagliflozin x diabetic ketoacidosis | hosp=41, PRR=30.77 → LABEL_UPDATE
-  dupilumab x conjunctivitis | 0 deaths, PRR=9.0, ocular AE → LABEL_UPDATE
-  pregabalin x drug abuse    | 0 deaths, PRR=4.0, known risk → LABEL_UPDATE
+  dupilumab x conjunctivitis    | 0 deaths, PRR=9.0, ocular AE → LABEL_UPDATE
+  pregabalin x drug abuse       | 0 deaths, PRR=4.0, known risk → LABEL_UPDATE
   tirzepatide x injection site pain | 0 deaths, 0 LT, mild local → MONITOR
-  semaglutide x flatulence   | 0 deaths, 0 LT, GI symptom → MONITOR
-  tirzepatide x eructation   | 0 deaths, 0 LT, GI symptom → MONITOR
-  dupilumab x scratch        | 0 deaths, 0 LT, trivial → MONITOR
+  semaglutide x flatulence      | 0 deaths, 0 LT, GI symptom → MONITOR
+  tirzepatide x eructation      | 0 deaths, 0 LT, GI symptom → MONITOR
+  dupilumab x scratch           | 0 deaths, 0 LT, trivial → MONITOR
 
 Return ONLY a JSON object. No markdown, no explanation, no extra text.
 {{
@@ -274,6 +262,13 @@ Return ONLY a JSON object. No markdown, no explanation, no extra text.
 
 
 def _build_retry_prompt(state: dict, priority: str, error: str) -> str:
+    # Observability — must be inside the function, not at module level
+    try:
+        from app.observability.metrics import AGENT3_PYDANTIC_RETRIES
+        AGENT3_PYDANTIC_RETRIES.inc()
+    except Exception:
+        pass
+
     return f"""Your previous response failed schema validation with this error:
 {error}
 
@@ -283,11 +278,6 @@ key_findings must be a non-empty list of strings.
 stat_score and lit_score must be floats between 0.0 and 1.0.
 
 {_build_prompt(state, priority)}"""
-try:
-    from app.observability.metrics import AGENT3_PYDANTIC_RETRIES
-    AGENT3_PYDANTIC_RETRIES.inc()
-except Exception:
-    pass
 
 
 # ── GPT-4o call ───────────────────────────────────────────────────────────────
@@ -319,25 +309,22 @@ def _call_gpt4o(prompt: str) -> tuple[dict, int, int]:
         if raw.startswith("json"):
             raw = raw[4:]
     raw = raw.strip()
+
+    # Observability — inside try/except so metrics failure never breaks pipeline
     try:
         from app.observability.metrics import LLM_TOKENS_USED
         LLM_TOKENS_USED.labels(agent="agent3", type="input").inc(input_tok)
         LLM_TOKENS_USED.labels(agent="agent3", type="output").inc(output_tok)
     except Exception:
         pass
+
     try:
         return json.loads(raw), input_tok, output_tok
     except json.JSONDecodeError as e:
         raise ValueError(f"GPT-4o did not return valid JSON: {e}\nOutput: {raw[:300]}")
-    
 
 
 # ── Snowflake writer ──────────────────────────────────────────────────────────
-# MERGE so re-running the pipeline on the same signal updates rather than
-# failing on the (drug_key, pt) uniqueness constraint.
-# key_findings and pmids_cited are VARIANT columns — PARSE_JSON() converts
-# the JSON string into Snowflake's native semi-structured type.
-# Cleanup in finally block so connection never leaks on query failure.
 
 def _write_to_snowflake(
     state     : dict,
