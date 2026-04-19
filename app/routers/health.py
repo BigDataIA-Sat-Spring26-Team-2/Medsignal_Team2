@@ -64,6 +64,8 @@ def get_metrics():
     Returns status=error with detail if any Snowflake query fails.
     Redis failure is handled gracefully — queue_depth returns 0.
     """
+    conn = None
+    cur  = None
     try:
         conn = get_conn()
         cur  = conn.cursor()
@@ -96,9 +98,6 @@ def get_metrics():
         )
         decision_breakdown = {row[0]: row[1] for row in cur.fetchall()}
 
-        cur.close()
-        conn.close()
-
         return {
             "status"               : "ok",
             "timestamp"            : datetime.now(timezone.utc).isoformat(),
@@ -111,3 +110,8 @@ def get_metrics():
         }
     except Exception as e:
         return {"status": "error", "detail": str(e)}
+    finally:
+        if cur  is not None:
+            cur.close()
+        if conn is not None:
+            conn.close()

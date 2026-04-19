@@ -411,7 +411,6 @@ st.markdown(f"""
         <div class="ms-page-title">System Metrics</div>
         <div class="ms-page-desc">
             Live aggregates from Snowflake and Redis.
-            Auto-refreshes every 30 seconds.
         </div>
     </div>
     <div class="ms-summary">
