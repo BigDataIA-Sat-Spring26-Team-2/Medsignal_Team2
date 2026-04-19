@@ -138,7 +138,13 @@ def _validate_citations(
             "Stripped %d fabricated PMID(s) from %s x %s: %s",
             len(fabricated), brief.drug_key, brief.pt, fabricated,
         )
-
+    try:
+        from app.observability.metrics import AGENT3_CITATIONS_REMOVED
+        removed = pre_count - len(brief.pmids_cited)
+        if removed > 0:
+            AGENT3_CITATIONS_REMOVED.inc(removed)
+    except Exception:
+        pass
     return brief.model_copy(update={"pmids_cited": cleaned})
 
 
@@ -237,6 +243,11 @@ key_findings must be a non-empty list of strings.
 stat_score and lit_score must be floats between 0.0 and 1.0.
 
 {_build_prompt(state, priority)}"""
+try:
+    from app.observability.metrics import AGENT3_PYDANTIC_RETRIES
+    AGENT3_PYDANTIC_RETRIES.inc()
+except Exception:
+    pass
 
 
 # ── GPT-4o call ───────────────────────────────────────────────────────────────
@@ -270,11 +281,17 @@ def _call_gpt4o(prompt: str) -> tuple[dict, int, int]:
         if raw.startswith("json"):
             raw = raw[4:]
     raw = raw.strip()
-
+    try:
+        from app.observability.metrics import LLM_TOKENS_USED
+        LLM_TOKENS_USED.labels(agent="agent3", type="input").inc(input_tok)
+        LLM_TOKENS_USED.labels(agent="agent3", type="output").inc(output_tok)
+    except Exception:
+        pass
     try:
         return json.loads(raw), input_tok, output_tok
     except json.JSONDecodeError as e:
         raise ValueError(f"GPT-4o did not return valid JSON: {e}\nOutput: {raw[:300]}")
+    
 
 
 # ── Snowflake writer ──────────────────────────────────────────────────────────
