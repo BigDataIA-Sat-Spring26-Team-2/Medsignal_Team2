@@ -17,6 +17,10 @@ import requests
 import streamlit as st
 import plotly.graph_objects as go
 from datetime import datetime
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env")
 
 st.set_page_config(
     page_title="MedSignal — Evaluation",
@@ -25,7 +29,8 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-API_BASE = "http://localhost:8000"
+API_BASE = os.getenv("MEDSIGNAL_API_BASE", "http://localhost:8000").strip().strip('"').strip("'").rstrip("/")
+
 
 # ── CSS ───────────────────────────────────────────────────────────────────────
 
@@ -228,9 +233,21 @@ st.markdown(f"""
 
 # ── Data fetch ────────────────────────────────────────────────────────────────
 
-summary    = fetch("/evaluation/summary")
-lead_times = fetch("/evaluation/lead-times")
-pr         = fetch("/evaluation/precision-recall")
+@st.cache_data(ttl=300)
+def fetch_summary():
+    return fetch("/evaluation/summary")
+
+@st.cache_data(ttl=300)
+def fetch_lead_times():
+    return fetch("/evaluation/lead-times")
+
+@st.cache_data(ttl=300)
+def fetch_pr():
+    return fetch("/evaluation/precision-recall")
+
+summary    = fetch_summary()
+lead_times = fetch_lead_times()
+pr         = fetch_pr()
 
 if summary is None or lead_times is None or pr is None:
     st.markdown("""
@@ -321,12 +338,15 @@ st.markdown("""
 
 if results:
     # Prepare chart data
-    drugs      = [r["drug_key"].capitalize() for r in results]
-    lead_days  = [r["lead_time_days"] if r["lead_time_days"] is not None else 0 for r in results]
-    flagged_l  = [r["flagged"] for r in results]
-    hover_pts  = [r["pt"].capitalize() for r in results]
-    hover_fda  = [r["fda_comm_label"] for r in results]
-    hover_date = [r["first_flagged_date"] or "Not detected" for r in results]
+    detected_results = [r for r in results if r["lead_time_days"] is not None]
+    not_detected     = [r["drug_key"].capitalize() for r in results if r["lead_time_days"] is None]
+
+    drugs      = [r["drug_key"].capitalize() for r in detected_results]
+    lead_days  = [r["lead_time_days"] for r in detected_results]
+    flagged_l  = [r["flagged"] for r in detected_results]
+    hover_pts  = [r["pt"].capitalize() for r in detected_results]
+    hover_fda  = [r["fda_comm_label"] for r in detected_results]
+    hover_date = [r["first_flagged_date"] for r in detected_results]
 
     bar_colors = [
         "#22C55E" if (f and d > 0) else
@@ -420,7 +440,14 @@ if results:
 
     # Chart in styled container
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-
+    if not_detected:
+        st.markdown(f"""
+            <div style="max-width:988px;margin:-32px auto 48px;padding:0 0 0 24px;">
+            <div style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#5E7498;">
+            Not detected (excluded from chart): {", ".join(not_detected)}
+            </div>
+            </div>
+        """, unsafe_allow_html=True)
 
 # ── Precision-Recall table ────────────────────────────────────────────────────
 
