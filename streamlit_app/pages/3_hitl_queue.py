@@ -70,6 +70,13 @@ html, body, .stApp {
 [data-testid="stSidebar"] { display: none !important; }
 .block-container { padding: 0 !important; max-width: 100% !important; }
 
+/* ── Centre Streamlit's own container to match ms-wrap ──────────────────── */
+section[data-testid="stMain"] > div {
+    padding-left: calc((100vw - 1100px) / 2) !important;
+    padding-right: calc((100vw - 1100px) / 2) !important;
+    max-width: 100% !important;
+}
+
 /* ── Topbar ─────────────────────────────────────────────────────────────── */
 .ms-topbar {
     display: flex;
@@ -123,7 +130,7 @@ html, body, .stApp {
 .ms-wrap {
     max-width: 1100px;
     margin: 0 auto;
-    padding: 48px 56px 80px;
+    padding: 48px 0 80px;
 }
 
 /* ── Page header — centred ──────────────────────────────────────────────── */
@@ -208,14 +215,14 @@ html, body, .stApp {
     background: var(--bg-surface);
     border-left: 1px solid var(--border);
     border-right: 1px solid var(--border);
-    padding: 0 32px 16px;
+    padding: 0 0 16px;
 }
 .ms-card-bottom {
     background: var(--bg-surface);
     border: 1px solid var(--border);
     border-top: 1px solid var(--border);
     border-radius: 0 0 12px 12px;
-    padding: 14px 32px 18px;
+    padding: 14px 0 18px;
     margin-bottom: 20px;
 }
 
@@ -384,13 +391,18 @@ html, body, .stApp {
 }
 
 /* ── Buttons ─────────────────────────────────────────────────────────────── */
+[data-testid="stHorizontalBlock"] {
+    align-items: flex-end !important;
+    gap: 12px !important;
+}
 [data-testid="stButton"] button {
     font-family: var(--font-mono) !important;
     font-size: 13px !important;
     font-weight: 500 !important;
     letter-spacing: 0.8px !important;
     text-transform: uppercase !important;
-    padding: 12px 16px !important;
+    height: 72px !important;
+    padding: 0 16px !important;
     width: 100% !important;
     border-radius: 7px !important;
     border: 1px solid rgba(255,255,255,0.12) !important;
