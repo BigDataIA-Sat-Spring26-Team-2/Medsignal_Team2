@@ -114,3 +114,15 @@ def debug():
         return {"count": len(result), "first": result[0] if result else None}
     except Exception as e:
         return {"error": str(e)}
+
+
+@router.post("/cache/invalidate")
+def invalidate_cache():
+    """
+    Clears Redis signal cache.
+    Called by Streamlit after on-demand investigation completes
+    so the next fetch reflects the updated priority counts.
+    """
+    from app.utils.redis_client import invalidate_signals
+    invalidate_signals()
+    return {"status": "invalidated"}
