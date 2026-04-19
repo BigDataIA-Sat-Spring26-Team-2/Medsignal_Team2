@@ -59,6 +59,12 @@ SIMILARITY_THRESHOLD = 0.60
 BM25_MIN_SCORE       = 0.1
 MAX_ABSTRACTS        = 5
 RRF_K                = 60
+# Chosen as SIMILARITY_THRESHOLD + 0.05 (= 0.65).
+# When HNSW finds no abstracts above the 0.60 cosine threshold but BM25
+# finds papers through keyword matching, those papers are marginally
+# relevant by definition. 0.65 signals weak literature support —
+# conservative enough to distinguish from a measured HNSW similarity
+# while acknowledging literature exists.
 BM25_ONLY_RELEVANCE_FALLBACK = 0.65
 COLLECTION_NAME      = "pubmed_abstracts"
 

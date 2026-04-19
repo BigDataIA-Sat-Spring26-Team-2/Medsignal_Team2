@@ -235,16 +235,14 @@ MONITOR : Use MONITOR when ALL of the following are true:
           If deaths are present, MONITOR is never appropriate.
 
 Worked examples to calibrate your decision:
-  dapagliflozin x death         | deaths=33, PRR=2.98   → RESTRICT
-  bupropion x completed suicide | deaths=76, PRR=17.84  → RESTRICT
-  metformin x lactic acidosis   | deaths present, PRR=4.2 → RESTRICT
-  empagliflozin x diabetic ketoacidosis | hosp=41, PRR=30.77 → LABEL_UPDATE
-  dupilumab x conjunctivitis    | 0 deaths, PRR=9.0, ocular AE → LABEL_UPDATE
-  pregabalin x drug abuse       | 0 deaths, PRR=4.0, known risk → LABEL_UPDATE
-  tirzepatide x injection site pain | 0 deaths, 0 LT, mild local → MONITOR
-  semaglutide x flatulence      | 0 deaths, 0 LT, GI symptom → MONITOR
-  tirzepatide x eructation      | 0 deaths, 0 LT, GI symptom → MONITOR
-  dupilumab x scratch           | 0 deaths, 0 LT, trivial → MONITOR
+Drug A x reaction  | deaths=90, PRR=17.8  → RESTRICT
+Drug B x reaction  | deaths=33, PRR=2.98  → RESTRICT
+Drug C x reaction  | deaths present, PRR=4.2 → RESTRICT
+Drug D x reaction  | hosp=41, PRR=30.8 → LABEL_UPDATE
+Drug E x reaction  | 0 deaths, PRR=9.0 → LABEL_UPDATE
+Drug F x reaction  | 0 deaths, PRR=4.0, known risk → LABEL_UPDATE
+Drug G x reaction  | 0 deaths, 0 LT, mild local → MONITOR
+Drug H x reaction  | 0 deaths, 0 LT, GI symptom → MONITOR
 
 Return ONLY a JSON object. No markdown, no explanation, no extra text.
 {{
