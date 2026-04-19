@@ -185,6 +185,16 @@ def generate_queries(
             drug_key,
             response.usage.total_tokens,
         )
+        try:
+            from app.observability.metrics import LLM_TOKENS_USED
+            LLM_TOKENS_USED.labels(agent="agent1", type="input").inc(
+                response.usage.prompt_tokens
+            )
+            LLM_TOKENS_USED.labels(agent="agent1", type="output").inc(
+                response.usage.completion_tokens
+            )
+        except Exception:
+            pass
 
         # Strip markdown fences if model added them despite instructions
         clean = raw_text.strip()

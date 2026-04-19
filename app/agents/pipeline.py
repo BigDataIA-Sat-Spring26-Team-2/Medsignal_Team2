@@ -34,7 +34,9 @@ Owner: Prachi
 
 import logging
 import os
+from time import time
 from typing import Optional
+from unittest import result
 
 from app.routers import signals
 from dotenv import load_dotenv
@@ -395,7 +397,15 @@ def run_pipeline_for_signal(signal: dict) -> dict:
         drug_key, pt, signal["prr"], signal["stat_score"],
     )
 
-    return pipeline.invoke(initial_state, config)
+    import time
+    _start = time.perf_counter()
+    result = pipeline.invoke(initial_state, config)
+    try:
+        from app.observability.metrics import PIPELINE_DURATION
+        PIPELINE_DURATION.observe(time.perf_counter() - _start)
+    except Exception:
+        pass
+    return result
 
 
 # ── Workflow 1 — Batch ────────────────────────────────────────────────────────

@@ -27,6 +27,8 @@ pytest = ">=8.0.0,<9.0.0"
 redis = "^7.4.0"
 snowflake-connector-python = "^4.4.0"
 rank-bm25 = "^0.2.2"
+prometheus-client = "^0.25.0"
+plotly = "^6.7.0"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

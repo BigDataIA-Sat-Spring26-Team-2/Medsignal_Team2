@@ -31,6 +31,7 @@ import os
 import logging
 from typing import Optional
 
+from app.observability.metrics import AGENT2_ABSTRACTS_RETRIEVED
 from dotenv import load_dotenv
 
 from app.agents.state import SignalState
@@ -479,7 +480,14 @@ def agent2_node(state: SignalState) -> dict:
         "agent2_complete drug=%s pt=%s abstracts=%d lit_score=%.4f",
         drug_key, state["pt"], len(top_abstracts), lit_score,
     )
-
+    try:
+        from app.observability.metrics import (
+            AGENT2_ABSTRACTS_RETRIEVED, AGENT2_ZERO_RESULTS)
+        AGENT2_ABSTRACTS_RETRIEVED.observe(len(top_abstracts))
+        if len(top_abstracts) == 0:
+            AGENT2_ZERO_RESULTS.inc()
+    except Exception:
+        pass
     return {
         "abstracts": top_abstracts,
         "lit_score": lit_score,
