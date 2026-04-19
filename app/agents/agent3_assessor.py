@@ -307,6 +307,7 @@ def _write_to_snowflake(
     input_tok : int,
     output_tok: int,
     gen_error : bool,
+    hallucination_report: Optional[dict] = None,
 ) -> None:
     conn = get_conn()
     cur  = conn.cursor()
@@ -329,6 +330,9 @@ def _write_to_snowflake(
                 %s                AS input_tokens,
                 %s                AS output_tokens,
                 %s                AS generation_error,
+                %s                AS hallucination_score,
+                %s                AS hallucination_pass,
+                PARSE_JSON(%s)    AS hallucination_flags,
                 CURRENT_TIMESTAMP() AS generated_at
         ) AS source
         ON  target.drug_key = source.drug_key
@@ -345,18 +349,24 @@ def _write_to_snowflake(
             input_tokens       = source.input_tokens,
             output_tokens      = source.output_tokens,
             generation_error   = source.generation_error,
+            hallucination_score = source.hallucination_score,
+            hallucination_pass  = source.hallucination_pass,
+            hallucination_flags = source.hallucination_flags,
             generated_at       = source.generated_at
         WHEN NOT MATCHED THEN INSERT (
             drug_key, pt, stat_score, lit_score, priority,
             brief_text, key_findings, pmids_cited, recommended_action,
             model_used, input_tokens, output_tokens,
-            generation_error, generated_at
+            generation_error, hallucination_score, hallucination_pass,
+            hallucination_flags, generated_at
         ) VALUES (
             source.drug_key,     source.pt,          source.stat_score,
             source.lit_score,    source.priority,    source.brief_text,
             source.key_findings, source.pmids_cited, source.recommended_action,
             source.model_used,   source.input_tokens, source.output_tokens,
-            source.generation_error, source.generated_at
+            source.generation_error, source.hallucination_score,
+            source.hallucination_pass, source.hallucination_flags,
+            source.generated_at
         )
         """,
         (
@@ -373,6 +383,9 @@ def _write_to_snowflake(
             input_tok,
             output_tok,
             gen_error,
+            hallucination_report["hallucination_score"] if hallucination_report else None,
+            hallucination_report["pass"]                if hallucination_report else None,
+            json.dumps(hallucination_report["flags"])   if hallucination_report else json.dumps([]),
         ),
     )
 
@@ -399,6 +412,8 @@ def agent3_node(state: SignalState) -> dict:
 
     Returns new state fields only — LangGraph merges them automatically.
     """
+    from evaluation.hallucination_check import validate_brief
+
     drug_key = state["drug_key"]
     pt       = state["pt"]
 
@@ -439,6 +454,7 @@ def agent3_node(state: SignalState) -> dict:
     brief           = None
     gen_error       = False
     last_error      = ""
+    hallucination_report = None
 
     for attempt in range(2):
         try:
@@ -472,10 +488,20 @@ def agent3_node(state: SignalState) -> dict:
             brief = SafetyBriefOutput(**raw)
             brief = _validate_citations(brief, retrieved_pmids)
 
+            # Run hallucination detection
+            hallucination_report = validate_brief(
+                brief=brief,
+                state=resolved_state,
+                abstracts=abstracts
+            )
+
             log.info(
-                "agent3_success — %s x %s | attempt=%d | pmids=%d | action=%s",
+                "agent3_success — %s x %s | attempt=%d | pmids=%d | action=%s | "
+                "hallucination_score=%.3f | pass=%s",
                 drug_key, pt, attempt + 1,
                 len(brief.pmids_cited), brief.recommended_action,
+                hallucination_report["hallucination_score"],
+                hallucination_report["pass"]
             )
             break
 
@@ -494,6 +520,7 @@ def agent3_node(state: SignalState) -> dict:
     _write_to_snowflake(
         resolved_state, priority, brief,
         input_tok, output_tok, gen_error,
+        hallucination_report,
     )
     invalidate_brief(state["drug_key"], state["pt"])
     return {
@@ -502,4 +529,5 @@ def agent3_node(state: SignalState) -> dict:
         "stat_score": stat_score,
         "lit_score" : lit_score,
         "error"     : last_error if gen_error else None,
+        "hallucination_report": hallucination_report,
     }
