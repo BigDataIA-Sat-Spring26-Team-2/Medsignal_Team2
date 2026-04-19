@@ -64,20 +64,20 @@ services:
       IS_PERSISTENT: "TRUE"
       ANONYMIZED_TELEMETRY: "FALSE"
     ports:
-      - "8001:8000"
+      - "8002:8000"
     volumes:
       - chromadata:/chroma/chroma
-  postgres:
-    image: postgres:15
-    container_name: medsignal-postgres
-    environment:
-      POSTGRES_DB: medsignal
-      POSTGRES_USER: medsignal
-      POSTGRES_PASSWORD: medsignal
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
+  # postgres:
+  #   image: postgres:15
+  #   container_name: medsignal-postgres
+  #   environment:
+  #     POSTGRES_DB: medsignal
+  #     POSTGRES_USER: medsignal
+  #     POSTGRES_PASSWORD: medsignal
+  #   ports:
+  #     - "5432:5432"
+  #   volumes:
+  #     - pgdata:/var/lib/postgresql/data
 
   kafka-ui:
     image: provectuslabs/kafka-ui:latest

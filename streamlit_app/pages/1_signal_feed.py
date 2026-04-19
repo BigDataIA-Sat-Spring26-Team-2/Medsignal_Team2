@@ -11,7 +11,9 @@ in a padding shim so they align with the ms-wrap container (56px sides).
 import requests
 import streamlit as st
 from datetime import datetime
-
+import os
+from pathlib import Path
+from dotenv import load_dotenv
 st.set_page_config(
     page_title="MedSignal — Signal Feed",
     page_icon ="⚕",
@@ -19,7 +21,11 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-API_BASE = "http://localhost:8000"
+#API_BASE = "http://localhost:8000"
+
+
+load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env")
+API_BASE = os.getenv("MEDSIGNAL_API_BASE", "http://localhost:8000").strip().strip('"').strip("'").rstrip("/")
 
 st.markdown("""
 <style>

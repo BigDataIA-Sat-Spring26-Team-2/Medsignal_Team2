@@ -27,7 +27,7 @@ def client():
     pytest fixtures are reusable setup functions — any test function
     that lists 'client' as a parameter automatically gets this object.
     """
-    from main import app
+    from app.main import app
     return TestClient(app)
 
 
