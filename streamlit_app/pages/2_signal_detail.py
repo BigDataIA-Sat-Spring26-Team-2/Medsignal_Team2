@@ -489,7 +489,7 @@ def fetch_brief(drug_key: str, pt: str):
         encoded_drug = quote(drug_key, safe="")
         encoded_pt   = quote(pt, safe="")
         url = f"{API_BASE}/signals/{encoded_drug}/{encoded_pt}/brief"
-        r = requests.get(url, timeout=60)
+        r = requests.get(url, timeout=120)
         if r.status_code == 404:
             return None
         r.raise_for_status()
