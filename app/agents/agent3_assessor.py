@@ -31,16 +31,11 @@ load_dotenv()
 log    = logging.getLogger(__name__)
 client = OpenAI()
 
-# Use gpt-4o-mini during development — switch to gpt-4o for the final
-# evaluation run by setting OPENAI_MODEL=gpt-4o in .env.
 MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-
-# Valid recommended_action values — used for normalization before Pydantic.
 _VALID_ACTIONS = {"MONITOR", "LABEL_UPDATE", "RESTRICT", "WITHDRAW"}
 
 
 # ── Priority tier ─────────────────────────────────────────────────────────────
-# Proposal p28. StatScore and LitScore evaluated independently — never combined.
 
 def assign_priority(stat_score: float, lit_score: float) -> str:
     if stat_score >= 0.7 and lit_score >= 0.5:
@@ -53,8 +48,6 @@ def assign_priority(stat_score: float, lit_score: float) -> str:
 
 
 # ── StatScore fallback ────────────────────────────────────────────────────────
-# Only called when Agent 1 has not populated stat_score in state.
-# Uses the same formula as Branch 2 so values are consistent.
 
 def _compute_stat_score(
     prr: float, case_count: int,
@@ -67,26 +60,15 @@ def _compute_stat_score(
 
 
 # ── Action normalization ──────────────────────────────────────────────────────
-# GPT-4o sometimes returns prose like "Escalate for pharmacovigilance review"
-# instead of one of the four exact Literal values. This maps common variants
-# to valid values before Pydantic validation runs, preventing generation_error
-# on every signal.
 
 def _normalize_action(raw: dict) -> dict:
     action = str(raw.get("recommended_action", "")).upper().strip()
 
-    # Hard guard — empty string or whitespace-only must not reach Pydantic.
-    # This happens when GPT-4o returns the JSON template placeholder text
-    # ("WITHDRAW or RESTRICT or LABEL_UPDATE or MONITOR") or an empty field.
     if not action:
         raw["recommended_action"] = "MONITOR"
-        log.warning(
-            "recommended_action was empty — defaulting to MONITOR"
-        )
+        log.warning("recommended_action was empty — defaulting to MONITOR")
         return raw
 
-    # Template placeholder — GPT-4o occasionally returns the example string
-    # from the prompt verbatim. Treat as no decision made → MONITOR.
     if "OR" in action and len(action) > 20:
         raw["recommended_action"] = "MONITOR"
         log.warning(
@@ -106,8 +88,6 @@ def _normalize_action(raw: dict) -> dict:
     elif "LABEL" in action or "UPDATE" in action or "REVISE" in action:
         normalized = "LABEL_UPDATE"
     else:
-        # Default to MONITOR — least disruptive safe fallback.
-        # Logged as warning so the reviewer knows normalization happened.
         normalized = "MONITOR"
         log.warning(
             "recommended_action '%s' did not match any known value — "
@@ -120,8 +100,6 @@ def _normalize_action(raw: dict) -> dict:
 
 
 # ── Citation guard ────────────────────────────────────────────────────────────
-# Every PMID in pmids_cited must appear in the set Agent 2 actually retrieved.
-# Anything else is a hallucination — strip it before writing to Snowflake.
 
 def _validate_citations(
     brief: SafetyBriefOutput,
@@ -129,7 +107,9 @@ def _validate_citations(
 ) -> SafetyBriefOutput:
     def normalize(p: str) -> str:
         return p.strip().lstrip("PMID:").strip()
+
     retrieved  = {normalize(p) for p in retrieved_pmids}
+    pre_count  = len(brief.pmids_cited)
     cleaned    = [p for p in brief.pmids_cited if normalize(p) in retrieved]
     fabricated = set(brief.pmids_cited) - set(cleaned)
 
@@ -138,14 +118,19 @@ def _validate_citations(
             "Stripped %d fabricated PMID(s) from %s x %s: %s",
             len(fabricated), brief.drug_key, brief.pt, fabricated,
         )
+
+    updated = brief.model_copy(update={"pmids_cited": cleaned})
+
+    # Observability — inside try/except so metrics failure never breaks pipeline
     try:
         from app.observability.metrics import AGENT3_CITATIONS_REMOVED
-        removed = pre_count - len(brief.pmids_cited)
+        removed = pre_count - len(updated.pmids_cited)
         if removed > 0:
             AGENT3_CITATIONS_REMOVED.inc(removed)
     except Exception:
         pass
-    return brief.model_copy(update={"pmids_cited": cleaned})
+
+    return updated
 
 
 # ── Prompt construction ───────────────────────────────────────────────────────
@@ -166,26 +151,52 @@ def _format_abstracts(abstracts: list) -> str:
 def _build_prompt(state: dict, priority: str) -> str:
     retrieved_pmids = [a.get("pmid", "") for a in (state.get("abstracts") or [])]
 
-    # Build a prominent outcome context line so GPT-4o cannot miss deaths
+    death = int(state.get("death_count") or 0)
+    lt    = int(state.get("lt_count")    or 0)
+    hosp  = int(state.get("hosp_count")  or 0)
+    prr   = float(state.get("prr") or 0)
+
     outcome_parts = []
-    if state["death_count"] > 0:
-        outcome_parts.append(f"{state['death_count']} deaths")
-    if state["lt_count"] > 0:
-        outcome_parts.append(f"{state['lt_count']} life-threatening events")
-    if state["hosp_count"] > 0:
-        outcome_parts.append(f"{state['hosp_count']} hospitalisations")
+    if death > 0:
+        outcome_parts.append(f"{death} deaths")
+    if lt > 0:
+        outcome_parts.append(f"{lt} life-threatening events")
+    if hosp > 0:
+        outcome_parts.append(f"{hosp} hospitalisations")
     outcome_line = (
         f"Serious outcomes: {', '.join(outcome_parts)}"
         if outcome_parts
         else "Serious outcomes: none reported"
     )
 
+    hints = []
+    if death > 0 and prr > 10:
+        hints.append(
+            f"⚠ WITHDRAW criteria may be met: {death} deaths reported with PRR {prr:.2f} > 10"
+        )
+    elif death > 0 and prr > 2:
+        hints.append(
+            f"⚠ RESTRICT criteria may be met: {death} deaths reported with PRR {prr:.2f} > 2 — "
+            f"consider whether use should be limited to specific populations"
+        )
+    elif lt > 0 and prr > 2:
+        hints.append(
+            f"⚠ RESTRICT criteria may be met: {lt} life-threatening events with PRR {prr:.2f}"
+        )
+    elif death == 0 and lt == 0 and hosp == 0 and prr < 5:
+        hints.append(
+            "ℹ No serious outcomes reported and PRR below 5 — "
+            "consider whether MONITOR is appropriate if reaction is mild and self-limiting"
+        )
+    hint_block = "\n".join(hints) if hints else ""
+
     return f"""Drug: {state["drug_key"]}
 Reaction (MedDRA PT): {state["pt"]}
-PRR: {state["prr"]:.2f} | Cases: {state["case_count"]}
+PRR: {prr:.2f} | Cases: {state["case_count"]}
 {outcome_line}
 StatScore: {state["stat_score"]:.4f} | LitScore: {state["lit_score"]:.4f}
 Priority: {priority}
+{hint_block}
 
 You MUST cite only these PMIDs: {retrieved_pmids}
 Do not cite any PMID not in this list. If no PMID is relevant, leave pmids_cited empty.
@@ -194,29 +205,44 @@ Retrieved abstracts — cite using [PMID:xxxxxxxx] inline in brief_text:
 {_format_abstracts(state.get("abstracts") or [])}
 
 Select recommended_action using this clinical decision framework.
-Apply it strictly — do not default to MONITOR unless none of the other criteria are met:
+Read the serious outcomes line above carefully before deciding.
 
-WITHDRAW     : Deaths reported AND PRR > 10 AND literature confirms direct
-               causal mechanism with no adequate risk mitigation possible.
-               Reserve for signals where continued use poses immediate risk
-               that outweighs all clinical benefit.
+WITHDRAW : Deaths reported AND PRR > 10 AND literature confirms direct
+           causal mechanism with no adequate risk mitigation possible.
+           Reserve for signals where continued use poses immediate serious
+           risk that outweighs all clinical benefit.
 
-RESTRICT     : Serious outcomes present (deaths OR life-threatening events)
-               AND PRR > 5 AND literature supports limiting use to specific
-               populations or with mandatory risk mitigation
-               (e.g. contraindicated in renal failure, pregnancy, or
-               with specific co-medications).
+RESTRICT : Any of the following:
+           — Deaths reported AND PRR > 2 AND literature supports limiting
+             use to specific populations (e.g. renal failure, pregnancy,
+             elderly) or adding mandatory contraindications.
+           — Life-threatening events AND PRR > 5 AND literature supports
+             restriction to specific conditions or co-medication warnings.
 
-LABEL_UPDATE : PRR > 2 AND reaction is not adequately described in current
-               labeling, OR new epidemiological evidence strengthens a known
-               but under-documented risk. Applies even when outcomes are not
-               life-threatening if signal frequency and PRR justify updated
-               prescriber guidance. This is the most common appropriate action
-               for a statistically significant P1 or P2 signal.
+LABEL_UPDATE : PRR > 2 AND the reaction is statistically significant AND
+               one of:
+               — Reaction is not adequately described in current labeling
+               — New evidence strengthens a known but under-documented risk
+               — Reaction has serious outcomes (hospitalisation) but does
+                 not meet RESTRICT threshold
+               This is the most common action for P1/P2 signals without deaths.
 
-MONITOR      : Reaction is already adequately labeled, OR evidence is
-               insufficient for regulatory action, OR reaction is mild and
-               self-limiting with no serious outcomes and PRR below 3.
+MONITOR : Use MONITOR when ALL of the following are true:
+          — Zero deaths, zero life-threatening events, zero hospitalisations
+          — Reaction is mild and self-limiting (e.g. injection site pain,
+            nausea, flatulence, minor skin reactions, eructation)
+          — PRR < 5 OR the reaction is already well-documented in labeling
+          If deaths are present, MONITOR is never appropriate.
+
+Worked examples to calibrate your decision:
+Drug A x reaction  | deaths=90, PRR=17.8  → RESTRICT
+Drug B x reaction  | deaths=33, PRR=2.98  → RESTRICT
+Drug C x reaction  | deaths present, PRR=4.2 → RESTRICT
+Drug D x reaction  | hosp=41, PRR=30.8 → LABEL_UPDATE
+Drug E x reaction  | 0 deaths, PRR=9.0 → LABEL_UPDATE
+Drug F x reaction  | 0 deaths, PRR=4.0, known risk → LABEL_UPDATE
+Drug G x reaction  | 0 deaths, 0 LT, mild local → MONITOR
+Drug H x reaction  | 0 deaths, 0 LT, GI symptom → MONITOR
 
 Return ONLY a JSON object. No markdown, no explanation, no extra text.
 {{
@@ -234,6 +260,13 @@ Return ONLY a JSON object. No markdown, no explanation, no extra text.
 
 
 def _build_retry_prompt(state: dict, priority: str, error: str) -> str:
+    # Observability — must be inside the function, not at module level
+    try:
+        from app.observability.metrics import AGENT3_PYDANTIC_RETRIES
+        AGENT3_PYDANTIC_RETRIES.inc()
+    except Exception:
+        pass
+
     return f"""Your previous response failed schema validation with this error:
 {error}
 
@@ -243,11 +276,6 @@ key_findings must be a non-empty list of strings.
 stat_score and lit_score must be floats between 0.0 and 1.0.
 
 {_build_prompt(state, priority)}"""
-try:
-    from app.observability.metrics import AGENT3_PYDANTIC_RETRIES
-    AGENT3_PYDANTIC_RETRIES.inc()
-except Exception:
-    pass
 
 
 # ── GPT-4o call ───────────────────────────────────────────────────────────────
@@ -274,31 +302,27 @@ def _call_gpt4o(prompt: str) -> tuple[dict, int, int]:
     input_tok  = response.usage.prompt_tokens
     output_tok = response.usage.completion_tokens
 
-    # Strip markdown fences — GPT-4o occasionally wraps JSON in ```json```
-    # blocks despite explicit instructions not to.
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"):
             raw = raw[4:]
     raw = raw.strip()
+
+    # Observability — inside try/except so metrics failure never breaks pipeline
     try:
         from app.observability.metrics import LLM_TOKENS_USED
         LLM_TOKENS_USED.labels(agent="agent3", type="input").inc(input_tok)
         LLM_TOKENS_USED.labels(agent="agent3", type="output").inc(output_tok)
     except Exception:
         pass
+
     try:
         return json.loads(raw), input_tok, output_tok
     except json.JSONDecodeError as e:
         raise ValueError(f"GPT-4o did not return valid JSON: {e}\nOutput: {raw[:300]}")
-    
 
 
 # ── Snowflake writer ──────────────────────────────────────────────────────────
-# MERGE so re-running the pipeline on the same signal updates rather than
-# failing on the (drug_key, pt) uniqueness constraint.
-# key_findings and pmids_cited are VARIANT columns — PARSE_JSON() converts
-# the JSON string into Snowflake's native semi-structured type.
 
 def _write_to_snowflake(
     state     : dict,
@@ -311,74 +335,75 @@ def _write_to_snowflake(
     conn = get_conn()
     cur  = conn.cursor()
 
-    cur.execute(
-        """
-        MERGE INTO safety_briefs AS target
-        USING (
-            SELECT
-                %s                AS drug_key,
-                %s                AS pt,
-                %s                AS stat_score,
-                %s                AS lit_score,
-                %s                AS priority,
-                %s                AS brief_text,
-                PARSE_JSON(%s)    AS key_findings,
-                PARSE_JSON(%s)    AS pmids_cited,
-                %s                AS recommended_action,
-                %s                AS model_used,
-                %s                AS input_tokens,
-                %s                AS output_tokens,
-                %s                AS generation_error,
-                CURRENT_TIMESTAMP() AS generated_at
-        ) AS source
-        ON  target.drug_key = source.drug_key
-        AND target.pt       = source.pt
-        WHEN MATCHED THEN UPDATE SET
-            stat_score         = source.stat_score,
-            lit_score          = source.lit_score,
-            priority           = source.priority,
-            brief_text         = source.brief_text,
-            key_findings       = source.key_findings,
-            pmids_cited        = source.pmids_cited,
-            recommended_action = source.recommended_action,
-            model_used         = source.model_used,
-            input_tokens       = source.input_tokens,
-            output_tokens      = source.output_tokens,
-            generation_error   = source.generation_error,
-            generated_at       = source.generated_at
-        WHEN NOT MATCHED THEN INSERT (
-            drug_key, pt, stat_score, lit_score, priority,
-            brief_text, key_findings, pmids_cited, recommended_action,
-            model_used, input_tokens, output_tokens,
-            generation_error, generated_at
-        ) VALUES (
-            source.drug_key,     source.pt,          source.stat_score,
-            source.lit_score,    source.priority,    source.brief_text,
-            source.key_findings, source.pmids_cited, source.recommended_action,
-            source.model_used,   source.input_tokens, source.output_tokens,
-            source.generation_error, source.generated_at
+    try:
+        cur.execute(
+            """
+            MERGE INTO safety_briefs AS target
+            USING (
+                SELECT
+                    %s                AS drug_key,
+                    %s                AS pt,
+                    %s                AS stat_score,
+                    %s                AS lit_score,
+                    %s                AS priority,
+                    %s                AS brief_text,
+                    PARSE_JSON(%s)    AS key_findings,
+                    PARSE_JSON(%s)    AS pmids_cited,
+                    %s                AS recommended_action,
+                    %s                AS model_used,
+                    %s                AS input_tokens,
+                    %s                AS output_tokens,
+                    %s                AS generation_error,
+                    CURRENT_TIMESTAMP() AS generated_at
+            ) AS source
+            ON  target.drug_key = source.drug_key
+            AND target.pt       = source.pt
+            WHEN MATCHED THEN UPDATE SET
+                stat_score         = source.stat_score,
+                lit_score          = source.lit_score,
+                priority           = source.priority,
+                brief_text         = source.brief_text,
+                key_findings       = source.key_findings,
+                pmids_cited        = source.pmids_cited,
+                recommended_action = source.recommended_action,
+                model_used         = source.model_used,
+                input_tokens       = source.input_tokens,
+                output_tokens      = source.output_tokens,
+                generation_error   = source.generation_error,
+                generated_at       = source.generated_at
+            WHEN NOT MATCHED THEN INSERT (
+                drug_key, pt, stat_score, lit_score, priority,
+                brief_text, key_findings, pmids_cited, recommended_action,
+                model_used, input_tokens, output_tokens,
+                generation_error, generated_at
+            ) VALUES (
+                source.drug_key,     source.pt,          source.stat_score,
+                source.lit_score,    source.priority,    source.brief_text,
+                source.key_findings, source.pmids_cited, source.recommended_action,
+                source.model_used,   source.input_tokens, source.output_tokens,
+                source.generation_error, source.generated_at
+            )
+            """,
+            (
+                state["drug_key"],
+                state["pt"],
+                state.get("stat_score"),
+                state.get("lit_score"),
+                priority,
+                brief.brief_text               if brief else None,
+                json.dumps(brief.key_findings) if brief else json.dumps([]),
+                json.dumps(brief.pmids_cited)  if brief else json.dumps([]),
+                brief.recommended_action       if brief else None,
+                MODEL,
+                input_tok,
+                output_tok,
+                gen_error,
+            ),
         )
-        """,
-        (
-            state["drug_key"],
-            state["pt"],
-            state.get("stat_score"),
-            state.get("lit_score"),
-            priority,
-            brief.brief_text               if brief else None,
-            json.dumps(brief.key_findings) if brief else json.dumps([]),
-            json.dumps(brief.pmids_cited)  if brief else json.dumps([]),
-            brief.recommended_action       if brief else None,
-            MODEL,
-            input_tok,
-            output_tok,
-            gen_error,
-        ),
-    )
-
-    conn.commit()
-    cur.close()
-    conn.close()
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
 
     log.info(
         "safety_briefs — %s x %s | priority=%s | gen_error=%s | tokens=%d",
@@ -402,8 +427,6 @@ def agent3_node(state: SignalState) -> dict:
     drug_key = state["drug_key"]
     pt       = state["pt"]
 
-    # Agent 1 sets stat_score. Log a warning if it is missing so integration
-    # failures are visible in logs rather than silently producing wrong output.
     stat_score = state.get("stat_score")
     if stat_score is None:
         log.warning(
@@ -419,8 +442,6 @@ def agent3_node(state: SignalState) -> dict:
     lit_score = state.get("lit_score") or 0.0
     abstracts = state.get("abstracts") or []
 
-    # Use local variables so state is not mutated inside the node.
-    # LangGraph merges the return dict into state after the node completes.
     resolved_state = {
         **state,
         "stat_score": stat_score,
@@ -455,13 +476,8 @@ def agent3_node(state: SignalState) -> dict:
             input_tok  += i_tok
             output_tok += o_tok
 
-            # Normalize recommended_action before Pydantic sees it.
-            # GPT-4o often returns prose variants that do not exactly match
-            # the four Literal values — this prevents generation_error on
-            # every signal due to a trivial formatting difference.
             raw = _normalize_action(raw)
 
-            # Overwrite fields GPT-4o must not control.
             raw["drug_key"]     = drug_key
             raw["pt"]           = pt
             raw["stat_score"]   = stat_score

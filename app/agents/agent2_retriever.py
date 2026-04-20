@@ -24,6 +24,19 @@ Why no LLM:
     Adding an LLM would introduce cost, latency, and non-reproducibility
     with zero benefit. ChromaDB + BM25 handle this better.
 
+LitScore computation note:
+    Only HNSW abstracts are used for the relevance component of LitScore.
+    BM25 scores are normalized by dividing by 10 which is an arbitrary
+    rescaling — they are not calibrated to the same scale as cosine
+    similarity. Using BM25 scores for relevance would inflate LitScore
+    artificially. BM25 abstracts still count toward the volume component
+    and are passed to Agent 3 for citation — they just don't distort
+    the relevance measurement.
+
+    Rare disease fallback: if HNSW finds nothing but BM25 finds papers,
+    a conservative relevance of 0.65 is used — acknowledging literature
+    exists but we cannot measure its relevance with a calibrated score.
+
 Owner: Prachi
 """
 
@@ -31,7 +44,6 @@ import os
 import logging
 from typing import Optional
 
-from app.observability.metrics import AGENT2_ABSTRACTS_RETRIEVED
 from dotenv import load_dotenv
 
 from app.agents.state import SignalState
@@ -42,35 +54,22 @@ log = logging.getLogger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-# CRITICAL: must be identical to the model used in load_pubmed.py at index time.
-# If this changes, stored embeddings become incompatible with query embeddings
-# and retrieval silently returns wrong results.
-MODEL_NAME = "all-MiniLM-L6-v2"
-
-# Cosine similarity threshold — abstracts below this are too generic.
-# Calibrated from POC: dupilumab x conjunctivitis top abstracts scored 0.61-0.76.
+MODEL_NAME           = "all-MiniLM-L6-v2"
 SIMILARITY_THRESHOLD = 0.60
-
-# BM25 minimum score — below this the keyword match is too weak to be useful.
-BM25_MIN_SCORE = 0.1
-
-# Maximum abstracts to pass to Agent 3.
-# More than 5 inflates the GPT-4o prompt beyond useful context.
-MAX_ABSTRACTS = 5
-
-# RRF constant — standard value from literature.
-# Prevents top-ranked results from dominating the fusion score.
-RRF_K = 60
-
-# ChromaDB collection name — must match what load_pubmed.py created.
-COLLECTION_NAME = "pubmed_abstracts"
+BM25_MIN_SCORE       = 0.1
+MAX_ABSTRACTS        = 5
+RRF_K                = 60
+# Chosen as SIMILARITY_THRESHOLD + 0.05 (= 0.65).
+# When HNSW finds no abstracts above the 0.60 cosine threshold but BM25
+# finds papers through keyword matching, those papers are marginally
+# relevant by definition. 0.65 signals weak literature support —
+# conservative enough to distinguish from a measured HNSW similarity
+# while acknowledging literature exists.
+BM25_ONLY_RELEVANCE_FALLBACK = 0.65
+COLLECTION_NAME      = "pubmed_abstracts"
 
 
 # ── Lazy initialization ───────────────────────────────────────────────────────
-# Nothing loads at import time.
-# Model, ChromaDB, and BM25 index all load on first call to agent2_node.
-# This allows unit tests to import pure logic functions without
-# needing sentence_transformers, chromadb, or rank_bm25 installed.
 
 _MODEL      = None
 _CLIENT     = None
@@ -82,10 +81,6 @@ _BM25_METAS = None
 
 
 def _get_model():
-    """
-    Lazy loader for the SentenceTransformer model.
-    Loads once on first call, reuses on subsequent calls.
-    """
     global _MODEL
     if _MODEL is None:
         from sentence_transformers import SentenceTransformer
@@ -96,11 +91,6 @@ def _get_model():
 
 
 def _get_collection():
-    """
-    Lazy loader for ChromaDB collection.
-    Uses shared chromadb_client utility which handles cloud vs local mode.
-    Fails with clear error if collection is missing.
-    """
     global _CLIENT, _COLLECTION
     if _COLLECTION is None:
         from app.utils.chromadb_client import get_client, get_collection
@@ -114,47 +104,6 @@ def _get_collection():
     return _COLLECTION
 
 
-# def _get_bm25():
-#     """
-#     Lazy loader for BM25 sparse index.
-
-#     Loads all documents from ChromaDB once and builds a BM25Okapi index.
-#     BM25 tokenises each document into words and builds an inverted index
-#     for fast keyword scoring.
-
-#     Why load all docs:
-#         BM25 needs the entire corpus to compute IDF (inverse document frequency).
-#         IDF measures how rare a word is across all documents.
-#         A word appearing in 1 of 1964 papers is more informative than one
-#         appearing in 1900 of 1964 papers.
-
-#     Returns:
-#         bm25   : BM25Okapi index over all documents
-#         docs   : list of document texts (parallel to bm25 index)
-#         ids    : list of ChromaDB IDs
-#         metas  : list of metadata dicts (drug_name, pmid, year)
-#     """
-#     global _BM25, _BM25_DOCS, _BM25_IDS, _BM25_METAS
-#     if _BM25 is None:
-#         from rank_bm25 import BM25Okapi
-
-#         log.info("Building BM25 sparse index from ChromaDB...")
-#         collection = _get_collection()
-
-#         # Load all documents from ChromaDB
-#         all_data   = collection.get(include=["documents", "metadatas"], limit=10000,)
-#         _BM25_DOCS  = all_data["documents"]
-#         _BM25_IDS   = all_data["ids"]
-#         _BM25_METAS = all_data["metadatas"]
-
-#         # Tokenise: lowercase + split on whitespace
-#         # Simple tokenisation is sufficient for biomedical abstracts
-#         tokenised = [doc.lower().split() for doc in _BM25_DOCS]
-#         _BM25     = BM25Okapi(tokenised)
-
-#         log.info("BM25 index built — %d documents indexed", len(_BM25_DOCS))
-
-#     return _BM25, _BM25_DOCS, _BM25_IDS, _BM25_METAS
 def _get_bm25():
     """
     Lazy loader for BM25 sparse index.
@@ -167,6 +116,12 @@ def _get_bm25():
         ChromaDB cloud free tier enforces limit=300 per GET request.
         Setting limit=10000 returns HTTP 422 Quota Exceeded.
         Pagination fetches all 1964 documents across 7 requests of 300.
+
+    Why load all docs:
+        BM25 needs the entire corpus to compute IDF (inverse document
+        frequency). IDF measures how rare a word is across all documents.
+        A word appearing in 1 of 1964 papers is more informative than
+        one appearing in 1900 of 1964 papers.
     """
     global _BM25, _BM25_DOCS, _BM25_IDS, _BM25_METAS
 
@@ -180,7 +135,7 @@ def _get_bm25():
         all_ids   = []
         all_metas = []
         offset    = 0
-        batch     = 300   # ChromaDB cloud free tier limit per GET request
+        batch     = 300
 
         while True:
             page = collection.get(
@@ -203,7 +158,6 @@ def _get_bm25():
                 fetched, offset, len(all_docs),
             )
 
-            # Stop if fewer than batch size returned — last page
             if fetched < batch:
                 break
 
@@ -220,6 +174,7 @@ def _get_bm25():
         )
 
     return _BM25, _BM25_DOCS, _BM25_IDS, _BM25_METAS
+
 
 # ── Step 1: HNSW dense retrieval ─────────────────────────────────────────────
 
@@ -245,6 +200,9 @@ def hnsw_search(
 
     Returns:
         List of result dicts with pmid, text, distance, similarity, drug_name.
+        similarity field contains real cosine similarity in [0, 1].
+        retriever field is set to "hnsw" — used by compute_lit_score
+        to identify which abstracts have calibrated similarity scores.
     """
     collection = _get_collection()
     embedding  = embed_query(query)
@@ -287,49 +245,36 @@ def bm25_search(
     """
     Search using BM25 keyword matching.
 
-    Why BM25 complements HNSW:
-        HNSW finds papers semantically similar to the query vector.
-        BM25 finds papers containing the exact query words.
-        A short case report saying "dupilumab conjunctivitis: 3 cases"
-        scores high on BM25 (exact match) but low on HNSW (too short,
-        not semantically rich enough to be a close vector neighbor).
+    Critical for rare diseases where the embedding space is sparse —
+    HNSW may miss papers that BM25 finds through exact keyword matching.
 
-    Filters by drug_name to keep results drug-specific.
-    Applies BM25_MIN_SCORE to discard weak keyword matches.
-
-    BM25 has no distance concept — we normalize score to 0-1 range
-    for consistent comparison in RRF.
-
-    Returns:
-        List of result dicts with pmid, text, similarity, drug_name.
+    BM25 scores are normalized by dividing by 10 solely for data structure
+    consistency. These values must NOT be used for LitScore relevance —
+    they are not comparable to cosine similarity values.
+    retriever field is "bm25" so compute_lit_score excludes them from
+    the relevance average.
     """
     bm25, docs, ids, metas = _get_bm25()
 
     tokens = query.lower().split()
     scores = bm25.get_scores(tokens)
 
-    # Zip scores with metadata, filter by drug and minimum score
     candidates = [
         (score, doc, uid, meta)
         for score, doc, uid, meta in zip(scores, docs, ids, metas)
         if meta.get("drug_name") == drug_key and score >= BM25_MIN_SCORE
     ]
 
-    # Sort by score descending
     candidates.sort(key=lambda x: x[0], reverse=True)
 
     results = []
     for score, doc, uid, meta in candidates[:n_results]:
-        # Normalize BM25 score to 0-1 range for RRF compatibility
-        # BM25 scores vary widely — dividing by 10 is a reasonable normalizer
-        # for biomedical abstracts (typical max score is 5-15)
         normalized_similarity = min(score / 10.0, 1.0)
-
         results.append({
             "pmid"      : meta.get("pmid", "unknown"),
             "text"      : doc,
-            "distance"  : float(1.0 - normalized_similarity),  # BM25 has no true distance, so we invert similarity
-            "similarity": round(float(normalized_similarity), 4), # Higher BM25 score means more relevant
+            "distance"  : float(1.0 - normalized_similarity),
+            "similarity": round(float(normalized_similarity), 4),
             "drug_name" : drug_key,
             "retriever" : "bm25",
         })
@@ -343,25 +288,11 @@ def reciprocal_rank_fusion(query_results: list) -> list:
     """
     Fuse results from multiple retrievers into a single ranked list.
 
-    Works across both HNSW and BM25 results — the retriever type does not
-    matter, only rank position matters.
+    RRF formula: score += 1 / (rank + RRF_K)
 
-    RRF formula for each appearance:
-        score += 1 / (rank + RRF_K)
-
-    Paper appearing in HNSW rank 1 AND BM25 rank 1:
-        score = 1/(1+60) + 1/(1+60) = 0.0328  (highest possible)
-
-    Paper appearing only in HNSW rank 1:
-        score = 1/(1+60) = 0.0164
-
-    Papers found by both retrievers are the most robustly relevant.
-
-    Args:
-        query_results : list of result lists — one per query per retriever.
-
-    Returns:
-        Unique abstracts sorted by RRF score descending.
+    When the same PMID appears in both HNSW and BM25 results, the
+    HNSW entry is preferred — it has a real calibrated cosine similarity
+    rather than an arbitrary normalized BM25 score.
     """
     fused: dict = {}
 
@@ -374,12 +305,24 @@ def reciprocal_rank_fusion(query_results: list) -> list:
                 fused[pmid] = {**result, "rrf_score": rrf_score}
             else:
                 fused[pmid]["rrf_score"] += rrf_score
-                fused[pmid]["distance"]   = float(min(
-                    fused[pmid]["distance"], result["distance"]
-                ))
-                fused[pmid]["similarity"] = round(
-                    float(1.0 - fused[pmid]["distance"]), 4
-                )
+
+                current_is_hnsw  = fused[pmid].get("retriever") == "hnsw"
+                incoming_is_hnsw = result.get("retriever") == "hnsw"
+
+                if incoming_is_hnsw and not current_is_hnsw:
+                    # Upgrade to HNSW — real cosine similarity is better
+                    fused[pmid]["distance"]   = float(result["distance"])
+                    fused[pmid]["similarity"] = round(float(result["similarity"]), 4)
+                    fused[pmid]["retriever"]  = "hnsw"
+                elif not incoming_is_hnsw and current_is_hnsw:
+                    pass  # Keep existing HNSW entry
+                else:
+                    # Both same type — keep lower distance
+                    if result["distance"] < fused[pmid]["distance"]:
+                        fused[pmid]["distance"]   = float(result["distance"])
+                        fused[pmid]["similarity"] = round(
+                            float(1.0 - result["distance"]), 4
+                        )
 
     return sorted(fused.values(), key=lambda x: x["rrf_score"], reverse=True)
 
@@ -390,23 +333,50 @@ def compute_lit_score(abstracts: list) -> float:
     """
     Compute LitScore in [0, 1] from retrieved abstracts.
 
-    relevance_score : how close abstracts are on average (0.70 weight)
-    volume_score    : how many abstracts found above threshold (0.30 weight)
+    Formula:
+        LitScore = (relevance_score × 0.70) + (volume_score × 0.30)
 
-    LitScore = (relevance × 0.70) + (volume × 0.30)
+    relevance_score:
+        Average cosine similarity of HNSW abstracts only.
+        BM25 normalized scores are excluded — not calibrated to cosine scale.
+        Rare disease fallback: if HNSW finds nothing but BM25 does,
+        relevance = 0.65 (acknowledges literature exists, unmeasured).
+
+    volume_score:
+        Counts ALL abstracts (HNSW + BM25) — BM25 papers are real papers.
 
     Zero abstracts → LitScore = 0.0
-    Signals to Agent 3 there is no literature support.
-    Agent 3 assigns P2 or P4 — signal still reviewed by human.
     """
     if not abstracts:
         return 0.0
 
-    avg_distance    = sum(float(a["distance"]) for  a in abstracts) / len(abstracts)
-    relevance_score = max(0.0, 1.0 - (avg_distance / 1.5))
-    volume_score    = min(len(abstracts) / MAX_ABSTRACTS, 1.0)
+    volume_score   = min(len(abstracts) / MAX_ABSTRACTS, 1.0)
+    hnsw_abstracts = [a for a in abstracts if a.get("retriever") == "hnsw"]
 
-    return round((relevance_score * 0.70) + (volume_score * 0.30), 4)
+    if hnsw_abstracts:
+        avg_similarity = sum(float(a["similarity"]) for a in hnsw_abstracts) / len(hnsw_abstracts)
+    elif abstracts:
+        avg_similarity = BM25_ONLY_RELEVANCE_FALLBACK
+        log.info(
+            "compute_lit_score: HNSW found no abstracts, BM25 found %d — "
+            "using fallback relevance=%.2f",
+            len(abstracts), BM25_ONLY_RELEVANCE_FALLBACK,
+        )
+    else:
+        avg_similarity = 0.0
+
+    lit_score = round((avg_similarity * 0.70) + (volume_score * 0.30), 4)
+
+    log.info(
+        "compute_lit_score: hnsw=%d bm25=%d avg_sim=%.4f vol=%.2f lit=%.4f",
+        len(hnsw_abstracts),
+        len(abstracts) - len(hnsw_abstracts),
+        avg_similarity,
+        volume_score,
+        lit_score,
+    )
+
+    return lit_score
 
 
 # ── Step 5: LangGraph node ────────────────────────────────────────────────────
@@ -422,11 +392,6 @@ def agent2_node(state: SignalState) -> dict:
         4. Take top-5 fused results
         5. Compute LitScore
         6. Return abstracts + lit_score to state
-
-    Error handling:
-        Individual query failures are caught and logged.
-        If all queries fail, returns empty abstracts and 0.0 LitScore.
-        Agent 3 handles zero-literature case gracefully.
     """
     drug_key       = state["drug_key"]
     search_queries = state.get("search_queries") or []
@@ -441,7 +406,6 @@ def agent2_node(state: SignalState) -> dict:
 
     for i, query in enumerate(search_queries, start=1):
 
-        # HNSW dense retrieval
         try:
             hnsw_results = hnsw_search(query, drug_key)
             log.info(
@@ -453,7 +417,6 @@ def agent2_node(state: SignalState) -> dict:
             log.error("agent2: HNSW query failed query=%d error=%s", i, e)
             all_results.append([])
 
-        # BM25 sparse retrieval
         try:
             bm25_results = bm25_search(query, drug_key)
             log.info(
@@ -465,7 +428,6 @@ def agent2_node(state: SignalState) -> dict:
             log.error("agent2: BM25 query failed query=%d error=%s", i, e)
             all_results.append([])
 
-    # Fuse all 6 result sets (3 HNSW + 3 BM25) with RRF
     fused = reciprocal_rank_fusion(all_results)
 
     log.info(
@@ -480,14 +442,16 @@ def agent2_node(state: SignalState) -> dict:
         "agent2_complete drug=%s pt=%s abstracts=%d lit_score=%.4f",
         drug_key, state["pt"], len(top_abstracts), lit_score,
     )
+
+    # Observability — inside try/except so metrics failure never breaks pipeline
     try:
-        from app.observability.metrics import (
-            AGENT2_ABSTRACTS_RETRIEVED, AGENT2_ZERO_RESULTS)
+        from app.observability.metrics import AGENT2_ABSTRACTS_RETRIEVED, AGENT2_ZERO_RESULTS
         AGENT2_ABSTRACTS_RETRIEVED.observe(len(top_abstracts))
         if len(top_abstracts) == 0:
             AGENT2_ZERO_RESULTS.inc()
     except Exception:
         pass
+
     return {
         "abstracts": top_abstracts,
         "lit_score": lit_score,
