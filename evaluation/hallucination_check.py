@@ -95,10 +95,12 @@ def validate_numerical_accuracy(brief: Any, state: Dict[str, Any]) -> Dict[str, 
     matches = re.findall(number_pattern, brief_text)
 
     # Check PRR mentions
+    # NOTE: Only match "prr" or "proportional reporting ratio" specifically
+    # to avoid false positives on "proportion of patients", "proportion of reports", etc.
     prr_actual = state.get("prr", 0)
     prr_mentions = [
         float(num) for num, ctx in matches
-        if any(keyword in ctx for keyword in ["prr", "ratio", "proportion"])
+        if "prr" in ctx or "proportional reporting" in ctx
     ]
 
     for prr_claimed in prr_mentions:
@@ -222,6 +224,9 @@ def validate_priority_action_consistency(brief: Any, state: Dict[str, Any]) -> D
         )
 
     # Check 2: WITHDRAW justification
+    # NOTE: This only validates deaths + PRR. The full WITHDRAW criteria requires
+    # "literature confirms direct causal mechanism with no adequate risk mitigation possible"
+    # which cannot be easily automated. Reviewers should manually assess literature causality.
     if action == "WITHDRAW":
         if deaths == 0:
             errors.append("WITHDRAW without deaths — should be RESTRICT or LABEL_UPDATE")
@@ -231,15 +236,24 @@ def validate_priority_action_consistency(brief: Any, state: Dict[str, Any]) -> D
             )
 
     # Check 3: RESTRICT justification
+    # Updated to match agent3_assessor.py decision framework:
+    #   - Deaths + PRR > 2  OR
+    #   - Life-threatening events + PRR > 5
     if action == "RESTRICT":
         if deaths == 0 and lt == 0:
             errors.append(
                 "RESTRICT without deaths or life-threatening events — "
                 "should be LABEL_UPDATE or MONITOR"
             )
-        if prr < 5:
+        elif deaths > 0 and prr < 2:
             errors.append(
-                f"RESTRICT with PRR < 5 ({prr:.2f}) — threshold is PRR > 5"
+                f"RESTRICT with deaths but PRR < 2 ({prr:.2f}) — "
+                "threshold is PRR > 2 when deaths present"
+            )
+        elif deaths == 0 and lt > 0 and prr < 5:
+            errors.append(
+                f"RESTRICT with LT events but PRR < 5 ({prr:.2f}) — "
+                "threshold is PRR > 5 when only LT events (no deaths)"
             )
 
     # Check 4: LABEL_UPDATE justification
@@ -249,12 +263,18 @@ def validate_priority_action_consistency(brief: Any, state: Dict[str, Any]) -> D
                 f"LABEL_UPDATE with PRR < 2 ({prr:.2f}) — signal may not meet threshold"
             )
 
-    # Check 5: MONITOR over-use (P1/P2 should rarely use MONITOR)
-    if action == "MONITOR" and priority in ["P1", "P2"] and prr > 3:
-        errors.append(
-            f"MONITOR for {priority} signal with PRR {prr:.2f} — "
-            "likely under-reacting to significant signal"
-        )
+    # Check 5: MONITOR over-use
+    # Only flag MONITOR as suspicious if serious outcomes exist.
+    # Mild reactions (injection site pain, nausea) should get MONITOR even with high PRR.
+    # Example: tirzepatide x injection site pain (P1, PRR ~4, 0 deaths/LT/hosp) → MONITOR correct
+    if action == "MONITOR" and priority in ["P1", "P2"]:
+        # Only flag if there are serious outcomes that should trigger stronger action
+        if (deaths > 0 or lt > 0 or hosp > 0) and prr > 3:
+            errors.append(
+                f"MONITOR for {priority} signal with serious outcomes "
+                f"(deaths={deaths}, lt={lt}, hosp={hosp}) and PRR {prr:.2f} — "
+                "consider LABEL_UPDATE or RESTRICT"
+            )
 
     # Hallucination rate: 0 errors = 0.0, 1 error = 0.5, 2+ = 1.0
     hallucination_rate = min(len(errors) / 2.0, 1.0)

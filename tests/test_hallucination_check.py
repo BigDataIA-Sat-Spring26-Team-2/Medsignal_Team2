@@ -138,6 +138,33 @@ def test_priority_action_consistency_valid():
     assert result["hallucination_rate"] == 0.0
 
 
+def test_priority_action_consistency_restrict_with_low_prr_deaths():
+    """Test RESTRICT with deaths and PRR > 2 (should pass)."""
+    brief = SafetyBriefOutput(
+        drug_key="dapagliflozin",
+        pt="death",
+        brief_text="Signal shows deaths with PRR 2.98, recommend restriction.",
+        key_findings=["Deaths reported", "PRR above threshold"],
+        pmids_cited=["12345678"],
+        recommended_action="RESTRICT",
+        stat_score=0.75,
+        lit_score=0.60,
+        priority="P1",
+        generated_at="2024-01-01T00:00:00Z"
+    )
+
+    state = {
+        "prr": 2.98,  # Above 2.0 threshold with deaths
+        "death_count": 33,
+        "lt_count": 0,
+        "hosp_count": 0
+    }
+
+    result = validate_priority_action_consistency(brief, state)
+    print(f"✓ Valid RESTRICT with deaths + PRR 2.98: {result}")
+    assert result["hallucination_rate"] == 0.0  # Should pass with new threshold
+
+
 def test_priority_action_consistency_invalid_withdraw():
     """Test WITHDRAW without justification."""
     brief = SafetyBriefOutput(
@@ -164,6 +191,33 @@ def test_priority_action_consistency_invalid_withdraw():
     print(f"✓ Invalid WITHDRAW detected: {result}")
     assert result["hallucination_rate"] > 0.0
     assert any("WITHDRAW" in err for err in result["errors"])
+
+
+def test_priority_action_consistency_monitor_mild_reaction():
+    """Test MONITOR for P1 mild reaction (should pass)."""
+    brief = SafetyBriefOutput(
+        drug_key="tirzepatide",
+        pt="injection site pain",
+        brief_text="Mild local reaction, well tolerated.",
+        key_findings=["Mild adverse event", "Self-limiting"],
+        pmids_cited=["12345678"],
+        recommended_action="MONITOR",
+        stat_score=0.78,
+        lit_score=0.60,
+        priority="P1",
+        generated_at="2024-01-01T00:00:00Z"
+    )
+
+    state = {
+        "prr": 4.2,  # High PRR but mild reaction
+        "death_count": 0,
+        "lt_count": 0,
+        "hosp_count": 0  # No serious outcomes
+    }
+
+    result = validate_priority_action_consistency(brief, state)
+    print(f"✓ Valid MONITOR for P1 mild reaction: {result}")
+    assert result["hallucination_rate"] == 0.0  # Should pass - no serious outcomes
 
 
 def test_citation_grounding_no_abstracts():
@@ -338,7 +392,9 @@ if __name__ == "__main__":
     print("\n[2] Priority-Action Consistency Tests")
     print("-" * 80)
     test_priority_action_consistency_valid()
+    test_priority_action_consistency_restrict_with_low_prr_deaths()
     test_priority_action_consistency_invalid_withdraw()
+    test_priority_action_consistency_monitor_mild_reaction()
 
     print("\n[3] Citation Grounding Tests")
     print("-" * 80)
