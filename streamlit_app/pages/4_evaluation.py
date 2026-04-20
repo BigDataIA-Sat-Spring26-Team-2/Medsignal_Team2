@@ -218,10 +218,12 @@ st.markdown(f"""
 <div class="ms-topbar">
     <div class="ms-brand">Med<span>Signal</span></div>
     <nav class="ms-nav">
-        <a class="ms-navlink" href="/signal_feed">Signal Feed</a>
-        <a class="ms-navlink" href="/signal_detail">Signal Detail</a>
-        <a class="ms-navlink" href="/hitl_queue">Review Queue</a>
-        <a class="ms-navlink active" href="/evaluation">Evaluation</a>
+        <a class="ms-navlink" href="/signal_feed" target="_self">Signal Feed</a>
+        <a class="ms-navlink" href="/signal_detail" target="_self">Signal Detail</a>
+        <a class="ms-navlink" href="/hitl_queue" target="_self">Review Queue</a>
+        <a class="ms-navlink active" href="/evaluation" target="_self">Evaluation</a>
+        <a class="ms-navlink" href="/metrics" target="_self">Metrics</a>
+        <a class="ms-navlink" href="/evidence_explorer" target="_self">Evidence</a>
     </nav>
     <div class="ms-live">
         <div class="ms-live-dot"></div>

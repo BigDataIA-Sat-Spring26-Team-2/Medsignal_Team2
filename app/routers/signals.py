@@ -126,3 +126,97 @@ def invalidate_cache():
     from app.utils.redis_client import invalidate_signals
     invalidate_signals()
     return {"status": "invalidated"}
+
+
+@router.get("/{drug_key}/{pt}/evidence")
+def get_evidence(drug_key: str, pt: str):
+    """
+    Returns top-10 fused PubMed abstracts from ChromaDB for a drug-reaction pair.
+
+    Flow:
+        1. Verify signal exists in signals_flagged — 404 if not.
+        2. Call agent1 generate_queries to get 3 GPT-4o search queries.
+        3. Run hnsw_search + bm25_search for each query → 6 result sets.
+        4. Fuse with reciprocal_rank_fusion.
+        5. Return top 10 results + summary stats.
+    """
+    from app.services.signal_service import get_all_signals
+    from app.agents.agent1_detector import generate_queries
+    from app.agents.agent2_retriever import hnsw_search, bm25_search, reciprocal_rank_fusion
+
+    # ── Step 1: verify signal exists ──────────────────────────────────────────
+    all_signals = get_all_signals(priority=None, limit=500)
+    signal = next(
+        (s for s in all_signals
+         if s.get("drug_key") == drug_key and s.get("pt") == pt),
+        None,
+    )
+    if signal is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Signal not found in signals_flagged: {drug_key} x {pt}. "
+                   f"Run the agent pipeline for this signal first.",
+        )
+
+    prr        = float(signal.get("prr") or 2.0)
+    case_count = int(signal.get("case_count") or signal.get("drug_reaction_count") or 1)
+
+    # ── Step 2: generate 3 search queries via agent1 ──────────────────────────
+    try:
+        queries = generate_queries(drug_key, pt, prr, case_count)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Query generation failed: {e}",
+        )
+
+    # ── Step 3: run HNSW + BM25 for each query → 6 result sets ───────────────
+    all_results = []
+    hnsw_total  = 0
+    bm25_total  = 0
+
+    try:
+        for query in queries:
+            try:
+                hnsw_res = hnsw_search(query, drug_key)
+                hnsw_total += len(hnsw_res)
+                all_results.append(hnsw_res)
+            except Exception:
+                all_results.append([])
+
+            try:
+                bm25_res = bm25_search(query, drug_key)
+                bm25_total += len(bm25_res)
+                all_results.append(bm25_res)
+            except Exception:
+                all_results.append([])
+    except Exception as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"ChromaDB unreachable or has no abstracts for '{drug_key}': {e}",
+        )
+
+    # ── Step 4: fuse with RRF and take top 10 ─────────────────────────────────
+    fused = reciprocal_rank_fusion(all_results)
+    top10 = fused[:10]
+
+    # ── Step 5: build summary ─────────────────────────────────────────────────
+    hnsw_in_top = sum(1 for a in top10 if a.get("retriever") == "hnsw")
+    bm25_in_top = sum(1 for a in top10 if a.get("retriever") == "bm25")
+    avg_sim     = (
+        round(sum(a["similarity"] for a in top10) / len(top10), 4)
+        if top10 else 0.0
+    )
+
+    return {
+        "abstracts": top10,
+        "queries"  : queries,
+        "summary"  : {
+            "drug_key"       : drug_key,
+            "pt"             : pt,
+            "hnsw_count"     : hnsw_in_top,
+            "bm25_count"     : bm25_in_top,
+            "avg_similarity" : avg_sim,
+            "total_retrieved": len(fused),
+        },
+    }
