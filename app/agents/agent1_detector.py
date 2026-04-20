@@ -57,7 +57,7 @@ log = logging.getLogger(__name__)
 NUM_QUERIES = 3
 
 # Minimum words per query — single or two-word queries return irrelevant results
-MIN_QUERY_WORDS = 3
+MIN_QUERY_WORDS = 6
 
 # ── System prompt ─────────────────────────────────────────────────────────────
 
@@ -68,7 +68,7 @@ PubMed search queries to retrieve the most relevant clinical and safety literatu
 
 Rules:
 - Use ONLY plain keyword strings — no MeSH tags, no boolean operators, no field qualifiers
-- Each query must be 4-8 words long
+- Each query must be 6-10 words long
 - If you know the drug's pharmacological class (e.g. SGLT2 inhibitor, GLP-1 agonist,
   IL-4 receptor antagonist), include it in at least one query
 - If you do not know the drug's class, use the drug name only — do not invent a class
