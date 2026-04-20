@@ -203,6 +203,12 @@ def build_spark(jdbc_jar_path: str):
         .config("spark.driver.memory", "4g")
         # Suppress verbose Spark/Kafka INFO logs
         .config("spark.log.level", "WARN")
+        # ── Fix heartbeat timeout for large datasets
+        .config("spark.executor.heartbeatInterval", "60s")
+        .config("spark.network.timeout", "600s")
+        # ── Fix Snowflake REST timeout
+        .config("spark.executor.extraJavaOptions",
+                "-Dnet.snowflake.jdbc.max_connections=3")
         .getOrCreate()
     )
 
@@ -232,6 +238,10 @@ def read_kafka_topic(
         .option("startingOffsets", "earliest")
         .option("endingOffsets", "latest")
         .option("failOnDataLoss", "false")
+        .option("kafka.request.timeout.ms", "120000")       
+        .option("kafka.session.timeout.ms", "120000")       
+        .option("kafka.fetch.max.wait.ms",  "10000")        
+        .option("kafkaConsumer.pollTimeoutMs", "300000")
         .load()
         .selectExpr("CAST(value AS STRING) AS value")
     )
