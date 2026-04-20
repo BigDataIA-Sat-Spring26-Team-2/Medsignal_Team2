@@ -1,17 +1,15 @@
 """
-tests/test_hallucination_check.py — Unit tests for hallucination detection
+tests/unit/test_hallucination_check.py — Unit tests for hallucination detection
 
-Run with:
-    pytest tests/test_hallucination_check.py -v
-    or
-    python tests/test_hallucination_check.py
+Pure logic — no external dependencies.
+
+Run: poetry run pytest tests/unit/test_hallucination_check.py -v
 """
 
 import sys
 from pathlib import Path
 
-# Add project root to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from app.models.brief import SafetyBriefOutput
 from evaluation.hallucination_check import (
@@ -48,7 +46,7 @@ def test_numerical_accuracy_clean():
     }
 
     result = validate_numerical_accuracy(brief, state)
-    print(f"✓ Clean brief: {result}")
+    print(f"OK: Clean brief: {result}")
     assert result["hallucination_rate"] == 0.0
     assert len(result["errors"]) == 0
 
@@ -58,7 +56,7 @@ def test_numerical_accuracy_hallucinated_prr():
     brief = SafetyBriefOutput(
         drug_key="warfarin",
         pt="skin necrosis",
-        brief_text="This signal has a PRR of 10.5 with 120 cases.",  # Wrong PRR
+        brief_text="This signal has a PRR of 10.5 with 120 cases.",
         key_findings=["High PRR"],
         pmids_cited=["12345678"],
         recommended_action="LABEL_UPDATE",
@@ -69,7 +67,7 @@ def test_numerical_accuracy_hallucinated_prr():
     )
 
     state = {
-        "prr": 3.50,  # Actual PRR
+        "prr": 3.50,
         "case_count": 120,
         "death_count": 0,
         "lt_count": 0,
@@ -77,7 +75,7 @@ def test_numerical_accuracy_hallucinated_prr():
     }
 
     result = validate_numerical_accuracy(brief, state)
-    print(f"✓ Hallucinated PRR detected: {result}")
+    print(f"OK: Hallucinated PRR detected: {result}")
     assert result["hallucination_rate"] > 0.0
     assert len(result["errors"]) > 0
 
@@ -100,13 +98,13 @@ def test_numerical_accuracy_false_death_claim():
     state = {
         "prr": 3.50,
         "case_count": 120,
-        "death_count": 5,  # Deaths exist but brief denies them
+        "death_count": 5,
         "lt_count": 0,
         "hosp_count": 0
     }
 
     result = validate_numerical_accuracy(brief, state)
-    print(f"✓ False death claim detected: {result}")
+    print(f"OK: False death claim detected: {result}")
     assert result["hallucination_rate"] > 0.0
     assert any("no death" in err.lower() for err in result["errors"])
 
@@ -134,7 +132,7 @@ def test_priority_action_consistency_valid():
     }
 
     result = validate_priority_action_consistency(brief, state)
-    print(f"✓ Valid P1 + LABEL_UPDATE: {result}")
+    print(f"OK: Valid P1 + LABEL_UPDATE: {result}")
     assert result["hallucination_rate"] == 0.0
 
 
@@ -154,15 +152,15 @@ def test_priority_action_consistency_restrict_with_low_prr_deaths():
     )
 
     state = {
-        "prr": 2.98,  # Above 2.0 threshold with deaths
+        "prr": 2.98,
         "death_count": 33,
         "lt_count": 0,
         "hosp_count": 0
     }
 
     result = validate_priority_action_consistency(brief, state)
-    print(f"✓ Valid RESTRICT with deaths + PRR 2.98: {result}")
-    assert result["hallucination_rate"] == 0.0  # Should pass with new threshold
+    print(f"OK: Valid RESTRICT with deaths + PRR 2.98: {result}")
+    assert result["hallucination_rate"] == 0.0
 
 
 def test_priority_action_consistency_invalid_withdraw():
@@ -173,7 +171,7 @@ def test_priority_action_consistency_invalid_withdraw():
         brief_text="This drug should be withdrawn.",
         key_findings=["Common adverse event"],
         pmids_cited=["12345678"],
-        recommended_action="WITHDRAW",  # Too aggressive
+        recommended_action="WITHDRAW",
         stat_score=0.45,
         lit_score=0.30,
         priority="P4",
@@ -182,13 +180,13 @@ def test_priority_action_consistency_invalid_withdraw():
 
     state = {
         "prr": 2.1,
-        "death_count": 0,  # No deaths
+        "death_count": 0,
         "lt_count": 0,
         "hosp_count": 0
     }
 
     result = validate_priority_action_consistency(brief, state)
-    print(f"✓ Invalid WITHDRAW detected: {result}")
+    print(f"OK: Invalid WITHDRAW detected: {result}")
     assert result["hallucination_rate"] > 0.0
     assert any("WITHDRAW" in err for err in result["errors"])
 
@@ -209,15 +207,15 @@ def test_priority_action_consistency_monitor_mild_reaction():
     )
 
     state = {
-        "prr": 4.2,  # High PRR but mild reaction
+        "prr": 4.2,
         "death_count": 0,
         "lt_count": 0,
-        "hosp_count": 0  # No serious outcomes
+        "hosp_count": 0
     }
 
     result = validate_priority_action_consistency(brief, state)
-    print(f"✓ Valid MONITOR for P1 mild reaction: {result}")
-    assert result["hallucination_rate"] == 0.0  # Should pass - no serious outcomes
+    print(f"OK: Valid MONITOR for P1 mild reaction: {result}")
+    assert result["hallucination_rate"] == 0.0
 
 
 def test_citation_grounding_no_abstracts():
@@ -230,16 +228,13 @@ def test_citation_grounding_no_abstracts():
         pmids_cited=["12345678"],
         recommended_action="MONITOR",
         stat_score=0.60,
-        lit_score=0.0,  # No abstracts
+        lit_score=0.0,
         priority="P4",
         generated_at="2024-01-01T00:00:00Z"
     )
 
-    abstracts = []  # No abstracts retrieved
-
-    result = validate_citation_grounding(brief, abstracts)
-    print(f"✓ No abstracts case: {result}")
-    # Should not penalize when no abstracts available
+    result = validate_citation_grounding(brief, abstracts=[])
+    print(f"OK: No abstracts case: {result}")
     assert result["hallucination_rate"] == 0.0
 
 
@@ -274,9 +269,8 @@ def test_citation_grounding_with_valid_citations():
     ]
 
     result = validate_citation_grounding(brief, abstracts)
-    print(f"✓ Valid citation grounding: {result}")
-    # Should pass with high similarity
-    assert result["hallucination_rate"] < 0.5  # May have some variation
+    print(f"OK: Valid citation grounding: {result}")
+    assert result["hallucination_rate"] < 0.5
 
 
 def test_composite_validation_clean_brief():
@@ -320,7 +314,7 @@ def test_composite_validation_clean_brief():
     ]
 
     result = validate_brief(brief, state, abstracts)
-    print(f"\n✓ COMPOSITE VALIDATION - Clean brief:")
+    print(f"\nOK: COMPOSITE VALIDATION - Clean brief:")
     print(f"  Hallucination score: {result['hallucination_score']:.3f}")
     print(f"  Pass: {result['pass']}")
     print(f"  Flags: {len(result['flags'])}")
@@ -335,77 +329,44 @@ def test_composite_validation_problematic_brief():
         drug_key="aspirin",
         pt="headache",
         brief_text=(
-            "This signal has a PRR of 15.0 with 500 cases and 20 deaths. "  # Wrong PRR
-            "Recommend immediate withdrawal from market."  # Wrong action for P4
+            "This signal has a PRR of 15.0 with 500 cases and 20 deaths. "
+            "Recommend immediate withdrawal from market."
         ),
         key_findings=["Extremely high risk"],
-        pmids_cited=["99999999"],  # Fabricated PMID
+        pmids_cited=["99999999"],
         recommended_action="WITHDRAW",
-        stat_score=0.35,  # Low score
-        lit_score=0.20,   # Low score
-        priority="P4",    # Low priority
+        stat_score=0.35,
+        lit_score=0.20,
+        priority="P4",
         generated_at="2024-01-01T00:00:00Z"
     )
 
     state = {
         "drug_key": "aspirin",
         "pt": "headache",
-        "prr": 2.1,  # Actual PRR much lower
-        "case_count": 50,  # Actual count much lower
-        "death_count": 0,  # No deaths
+        "prr": 2.1,
+        "case_count": 50,
+        "death_count": 0,
         "lt_count": 0,
         "hosp_count": 0
     }
 
     abstracts = [
         {
-            "pmid": "12345678",  # Different PMID
+            "pmid": "12345678",
             "text": "Aspirin commonly causes mild headache.",
             "similarity": 0.80
         }
     ]
 
     result = validate_brief(brief, state, abstracts)
-    print(f"\n✓ COMPOSITE VALIDATION - Problematic brief:")
+    print(f"\nOK: COMPOSITE VALIDATION - Problematic brief:")
     print(f"  Hallucination score: {result['hallucination_score']:.3f}")
     print(f"  Pass: {result['pass']}")
     print(f"  Flags: {len(result['flags'])}")
-    for flag in result['flags'][:5]:  # Show first 5 flags
+    for flag in result['flags'][:5]:
         print(f"    - {flag}")
 
     assert result["pass"] is False
     assert result["hallucination_score"] > 0.20
     assert len(result["flags"]) > 0
-
-
-if __name__ == "__main__":
-    print("=" * 80)
-    print("HALLUCINATION DETECTION TEST SUITE")
-    print("=" * 80)
-
-    print("\n[1] Numerical Accuracy Tests")
-    print("-" * 80)
-    test_numerical_accuracy_clean()
-    test_numerical_accuracy_hallucinated_prr()
-    test_numerical_accuracy_false_death_claim()
-
-    print("\n[2] Priority-Action Consistency Tests")
-    print("-" * 80)
-    test_priority_action_consistency_valid()
-    test_priority_action_consistency_restrict_with_low_prr_deaths()
-    test_priority_action_consistency_invalid_withdraw()
-    test_priority_action_consistency_monitor_mild_reaction()
-
-    print("\n[3] Citation Grounding Tests")
-    print("-" * 80)
-    test_citation_grounding_no_abstracts()
-    test_citation_grounding_with_valid_citations()
-
-    print("\n[4] Composite Validation Tests")
-    print("-" * 80)
-    test_composite_validation_clean_brief()
-    test_composite_validation_problematic_brief()
-
-    print("\n" + "=" * 80)
-    print("✓ ALL TESTS PASSED")
-    print("=" * 80)
