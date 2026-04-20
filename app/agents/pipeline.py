@@ -29,7 +29,6 @@ Why MemorySaver:
     mid-pipeline the state at each boundary can be inspected.
     In-memory only — does not persist across process restarts.
 
-Owner: Prachi
 """
 
 import logging
@@ -49,11 +48,14 @@ from app.agents.agent2_retriever import agent2_node
 from app.agents.agent3_assessor  import agent3_node
 from app.utils.snowflake_client  import get_conn
 from app.utils.redis_client      import invalidate_brief, invalidate_signals
+from app.core.llm_router import LLMRouter
 
 load_dotenv()
 
 log = logging.getLogger(__name__)
 
+router = LLMRouter()
+router.reset()
 
 # ── Golden drugs ──────────────────────────────────────────────────────────────
 # Agent pipeline runs for all signals belonging to these 10 drugs in batch mode.
@@ -182,9 +184,8 @@ def load_golden_signals() -> list:
     and stored in signals_flagged. Agent 1 reads it from state
     without recomputing.
 
-    Uses ILIKE filter so salt form variants are caught:
-        "bupropion" matches "bupropion hydrochloride" if normalization
-        was not fully applied for some DRUG file records.
+    Uses exact match — drug names are RxNorm-normalized by Branch 1
+    so salt form variants are already resolved before signals_flagged is written
 
     Orders by PRR descending so highest-signal drugs process first.
     If the batch run is interrupted, the most important signals
@@ -350,6 +351,7 @@ def build_initial_state(signal: dict) -> SignalState:
         "hosp_count" : int(signal["hosp_count"]),
         "lt_count"   : int(signal["lt_count"]),
         "stat_score" : float(signal["stat_score"]) if signal["stat_score"] is not None else None,
+        "router"     : router,
 
         # Stage 1 — Agent 1 outputs
         "search_queries": None,
@@ -442,6 +444,7 @@ def run_all_golden_signals():
         )
         return
 
+    router.reset()
     log.info("=" * 60)
     log.info("MedSignal — Batch Pipeline Starting")
     log.info("Signals : %d", len(signals))
@@ -495,6 +498,8 @@ def run_all_golden_signals():
     log.info("Generation err : %d", gen_error)
     log.info("Exceptions     : %d", exceptions)
     log.info("Total          : %d", len(signals))
+    summary = router.get_usage_summary()
+    log.info("Token usage summary: %s", summary)
     log.info("=" * 60)
 
 
