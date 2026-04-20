@@ -1,22 +1,14 @@
 """
-tests/test_agent3.py — Agent 3 unit tests.
+tests/unit/test_agent3.py — Agent 3 unit tests
 
-Section 1: Pure logic tests — no API keys, no Snowflake, no network.
-Section 2: Integration test — calls GPT-4o and writes to Snowflake.
-           Requires OPENAI_API_KEY and SNOWFLAKE_* env vars.
+Pure logic tests — no API keys, no Snowflake, no network.
 
-Run unit only : poetry run pytest tests/test_agent3.py -v -m unit
-Run all       : poetry run pytest tests/test_agent3.py -v -s -m "unit or integration"
+Run: poetry run pytest tests/unit/test_agent3.py -v -m unit
 """
 
-import json
 import pytest
 from unittest.mock import patch, MagicMock
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# SECTION 1 — Unit tests (no external dependencies)
-# ══════════════════════════════════════════════════════════════════════════════
 
 @pytest.mark.unit
 def test_priority_tier_p1():
@@ -78,7 +70,7 @@ def test_stat_score_fallback_formula():
 def test_stat_score_death_increases_severity():
     """Death flag raises severity component from 0.0 to 1.0."""
     from app.agents.agent3_assessor import _compute_stat_score
-    no_death = _compute_stat_score(2.5, 60, death=0, lt=0, hosp=0)
+    no_death   = _compute_stat_score(2.5, 60, death=0, lt=0, hosp=0)
     with_death = _compute_stat_score(2.5, 60, death=5, lt=0, hosp=0)
     assert with_death > no_death, "Death flag must raise StatScore"
 
@@ -284,7 +276,6 @@ def test_agent3_node_returns_required_state_keys():
         "error"   : None,
     }
 
-    # Mock GPT-4o response
     mock_gpt_response = {
         "brief_text"        : "Bupropion has been associated with seizure [PMID:12345678].",
         "key_findings"      : ["PRR=4.2", "3 deaths", "Literature supports CNS mechanism"],
@@ -301,7 +292,6 @@ def test_agent3_node_returns_required_state_keys():
     with patch("app.agents.agent3_assessor._call_gpt4o") as mock_gpt, \
          patch("app.agents.agent3_assessor._write_to_snowflake") as mock_write:
 
-        # _call_gpt4o returns (parsed_dict, input_tokens, output_tokens)
         mock_gpt.return_value = (mock_gpt_response, 500, 200)
 
         result = agent3_node(mock_state)
@@ -313,6 +303,7 @@ def test_agent3_node_returns_required_state_keys():
     assert result["brief"]["recommended_action"] == "LABEL_UPDATE"
     assert mock_write.called
 
+
 @pytest.mark.unit
 def test_normalize_action_maps_prose_variants():
     from app.agents.agent3_assessor import _normalize_action
@@ -322,6 +313,7 @@ def test_normalize_action_maps_prose_variants():
     assert _normalize_action({"recommended_action": "Escalate for review"})["recommended_action"] == "MONITOR"
     assert _normalize_action({"recommended_action": "Withdraw from market"})["recommended_action"] == "WITHDRAW"
     assert _normalize_action({"recommended_action": "restrict prescribing"})["recommended_action"] == "RESTRICT"
+
 
 @pytest.mark.unit
 def test_agent3_node_sets_gen_error_on_double_failure():
@@ -352,7 +344,6 @@ def test_agent3_node_sets_gen_error_on_double_failure():
     with patch("app.agents.agent3_assessor._call_gpt4o") as mock_gpt, \
          patch("app.agents.agent3_assessor._write_to_snowflake") as mock_write:
 
-        # Both attempts raise ValueError (bad JSON from GPT-4o)
         mock_gpt.side_effect = ValueError("not valid JSON")
 
         result = agent3_node(mock_state)
@@ -360,153 +351,6 @@ def test_agent3_node_sets_gen_error_on_double_failure():
     assert result["brief"] is None
     assert result["error"] is not None
 
-    # Verify _write_to_snowflake was called with gen_error=True
     call_kwargs = mock_write.call_args
     assert call_kwargs.kwargs.get("gen_error") is True or \
            call_kwargs.args[5] is True  # positional: gen_error is 6th arg
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# SECTION 2 — Integration test (real GPT-4o + real Snowflake)
-# ══════════════════════════════════════════════════════════════════════════════
-
-@pytest.mark.integration
-def test_agent3_full_run_bupropion():
-    """
-    End-to-end Agent 3 test with real GPT-4o and real Snowflake.
-    Uses bupropion x seizure — a confirmed golden signal.
-    Verifies: priority assigned, brief written, PMIDs valid, row in Snowflake.
-
-    Requires: OPENAI_API_KEY, SNOWFLAKE_* env vars in .env
-    """
-    import os
-    import snowflake.connector
-    from dotenv import load_dotenv
-    from app.agents.agent3_assessor import agent3_node
-
-    load_dotenv()
-
-    # Skip if credentials not available
-    if not os.getenv("OPENAI_API_KEY") or not os.getenv("SNOWFLAKE_ACCOUNT"):
-        pytest.skip("OPENAI_API_KEY or Snowflake credentials not set")
-
-    retrieved_pmids = ["36100001", "36100002", "36100003"]
-
-    state = {
-        "drug_key"      : "bupropion",
-        "pt"            : "seizure",
-        "prr"           : 4.2,
-        "case_count"    : 89,
-        "death_count"   : 3,
-        "hosp_count"    : 12,
-        "lt_count"      : 5,
-        "stat_score"    : 0.78,
-        "lit_score"     : 0.65,
-        "search_queries": [
-            "bupropion seizure mechanism CNS threshold",
-            "bupropion seizure incidence risk factors",
-            "bupropion seizure clinical outcomes management",
-        ],
-        "abstracts": [
-            {
-                "pmid"      : "36100001",
-                "text"      : (
-                    "Bupropion, a norepinephrine-dopamine reuptake inhibitor, "
-                    "lowers the seizure threshold in a dose-dependent manner. "
-                    "Post-marketing surveillance confirms elevated seizure risk "
-                    "particularly at doses above 450mg/day."
-                ),
-                "similarity": 0.72,
-                "distance"  : 0.28,
-                "drug_name" : "bupropion",
-                "retriever" : "hnsw",
-                "rrf_score" : 0.031,
-            },
-            {
-                "pmid"      : "36100002",
-                "text"      : (
-                    "Retrospective FAERS analysis identified bupropion as a "
-                    "significant disproportionality signal for seizure with "
-                    "PRR=4.1 across 2019-2022 quarterly data."
-                ),
-                "similarity": 0.68,
-                "distance"  : 0.32,
-                "drug_name" : "bupropion",
-                "retriever" : "bm25",
-                "rrf_score" : 0.028,
-            },
-            {
-                "pmid"      : "36100003",
-                "text"      : (
-                    "Clinical management of bupropion-associated seizures "
-                    "requires immediate dose reduction. Most cases resolve "
-                    "without permanent neurological sequelae."
-                ),
-                "similarity": 0.63,
-                "distance"  : 0.37,
-                "drug_name" : "bupropion",
-                "retriever" : "hnsw",
-                "rrf_score" : 0.024,
-            },
-        ],
-        "priority": None,
-        "brief"   : None,
-        "error"   : None,
-    }
-
-    result = agent3_node(state)
-
-    # Basic state checks
-    assert result["priority"] in ["P1", "P2", "P3", "P4"]
-    assert result["brief"] is not None, "Brief should not be None for a valid signal"
-    assert result["error"] is None, f"Unexpected error: {result['error']}"
-
-    brief = result["brief"]
-
-    # Structural checks
-    assert isinstance(brief["brief_text"], str) and len(brief["brief_text"]) > 50
-    assert isinstance(brief["key_findings"], list) and len(brief["key_findings"]) > 0
-    assert isinstance(brief["pmids_cited"], list)
-    assert brief["recommended_action"] in [
-        "MONITOR", "LABEL_UPDATE", "RESTRICT", "WITHDRAW"
-    ]
-
-    # Citation guard check — no fabricated PMIDs
-    for pmid in brief["pmids_cited"]:
-        assert pmid in retrieved_pmids, (
-            f"PMID {pmid} was cited but not retrieved — citation guard failed"
-        )
-
-    # Priority is correct for stat=0.78 (>=0.7) and lit=0.65 (>=0.5)
-    assert result["priority"] == "P1", (
-        f"Expected P1 for stat=0.78 lit=0.65, got {result['priority']}"
-    )
-
-    # Verify row was written to Snowflake
-    conn = snowflake.connector.connect(
-        account  =os.getenv("SNOWFLAKE_ACCOUNT"),
-        user     =os.getenv("SNOWFLAKE_USER"),
-        password =os.getenv("SNOWFLAKE_PASSWORD"),
-        database =os.getenv("SNOWFLAKE_DATABASE"),
-        schema   =os.getenv("SNOWFLAKE_SCHEMA", "PUBLIC"),
-        warehouse=os.getenv("SNOWFLAKE_WAREHOUSE"),
-    )
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT priority, generation_error FROM safety_briefs "
-        "WHERE drug_key = %s AND pt = %s",
-        ("bupropion", "seizure"),
-    )
-    row = cur.fetchone()
-    cur.close()
-    conn.close()
-
-    assert row is not None, "No row found in safety_briefs — Snowflake write failed"
-    assert row[0] == "P1"
-    assert row[1] is False
-
-    print(f"\n✓ Priority    : {result['priority']}")
-    print(f"✓ Action      : {brief['recommended_action']}")
-    print(f"✓ PMIDs cited : {brief['pmids_cited']}")
-    print(f"✓ Key findings: {len(brief['key_findings'])}")
-    print(f"✓ Brief text  : {brief['brief_text'][:120]}...")

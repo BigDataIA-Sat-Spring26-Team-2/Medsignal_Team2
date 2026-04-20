@@ -1,18 +1,10 @@
 """
-test_on_demand.py — On-demand pipeline workflow tests
+tests/integration/test_on_demand.py — On-demand pipeline integration tests
 
 Tests Workflow 2: run_single_signal(drug_key, pt)
+Requires real Snowflake, real ChromaDB, and real OpenAI API key.
 
-Run: .venv\Scripts\python.exe -m pytest tests/test_on_demand.py -v -s
-
-Tests:
-    1. Known golden signal — dupilumab x conjunctivitis
-       Already in safety_briefs — pipeline reruns and updates
-    2. Non-existent signal — aspirin x headache
-       Not in signals_flagged — must raise ValueError
-    3. Priority tier is valid — one of P1/P2/P3/P4
-    4. Brief is generated — not None
-    5. No generation error
+Run: poetry run pytest tests/integration/test_on_demand.py -v -s
 """
 
 import logging
@@ -24,8 +16,6 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
-
-# ── Fixtures ──────────────────────────────────────────────────────────────────
 
 @pytest.fixture(scope="module")
 def dupilumab_result():
@@ -39,13 +29,8 @@ def dupilumab_result():
     return run_single_signal("dupilumab", "conjunctivitis")
 
 
-# ── Test 1: Known signal runs without error ───────────────────────────────────
-
 def test_known_signal_completes(dupilumab_result):
-    """
-    Pipeline must complete for a known golden signal.
-    No exception, no generation_error.
-    """
+    """Pipeline must complete for a known golden signal. No exception, no generation_error."""
     result = dupilumab_result
 
     print(f"\nPriority  : {result.get('priority')}")
@@ -56,8 +41,6 @@ def test_known_signal_completes(dupilumab_result):
     assert result is not None
     assert result.get("error") is None
 
-
-# ── Test 2: Priority tier is valid ────────────────────────────────────────────
 
 def test_priority_tier_valid(dupilumab_result):
     """
@@ -75,13 +58,8 @@ def test_priority_tier_valid(dupilumab_result):
     )
 
 
-# ── Test 3: SafetyBrief is generated ─────────────────────────────────────────
-
 def test_brief_generated(dupilumab_result):
-    """
-    SafetyBrief must be generated — not None.
-    Confirms Agent 3 ran successfully and Pydantic validation passed.
-    """
+    """SafetyBrief must be generated — not None."""
     brief = dupilumab_result.get("brief")
     print(f"\nBrief keys: {list(brief.keys()) if brief else 'None'}")
 
@@ -92,28 +70,18 @@ def test_brief_generated(dupilumab_result):
     assert "recommended_action" in brief
 
 
-# ── Test 4: Brief content is valid ────────────────────────────────────────────
-
 def test_brief_content_valid(dupilumab_result):
-    """
-    SafetyBrief content must be clinically meaningful.
-    Drug and reaction must appear in brief_text.
-    key_findings must be a non-empty list.
-    recommended_action must be one of four valid values.
-    """
+    """SafetyBrief content must be clinically meaningful."""
     brief = dupilumab_result.get("brief")
 
-    # Drug and reaction named correctly
     assert "dupilumab" in brief["brief_text"].lower(), \
         "brief_text does not mention dupilumab"
     assert "conjunctivitis" in brief["brief_text"].lower(), \
         "brief_text does not mention conjunctivitis"
 
-    # Key findings is a non-empty list
     assert isinstance(brief["key_findings"], list)
     assert len(brief["key_findings"]) > 0
 
-    # Recommended action is valid
     assert brief["recommended_action"] in (
         "MONITOR", "LABEL_UPDATE", "RESTRICT", "WITHDRAW"
     ), f"Invalid recommended_action: {brief['recommended_action']}"
@@ -124,13 +92,8 @@ def test_brief_content_valid(dupilumab_result):
     print(f"PMIDs cited   : {brief['pmids_cited']}")
 
 
-# ── Test 5: Scores are in valid range ─────────────────────────────────────────
-
 def test_scores_in_range(dupilumab_result):
-    """
-    stat_score and lit_score must be in [0.0, 1.0].
-    Confirms StatScore and LitScore formulas are correct.
-    """
+    """stat_score and lit_score must be in [0.0, 1.0]."""
     stat = dupilumab_result.get("stat_score")
     lit  = dupilumab_result.get("lit_score")
 
@@ -143,14 +106,8 @@ def test_scores_in_range(dupilumab_result):
     assert 0.0 <= lit  <= 1.0, f"lit_score {lit} out of range"
 
 
-# ── Test 6: Snowflake was updated ─────────────────────────────────────────────
-
 def test_snowflake_updated():
-    """
-    After on-demand run, Snowflake safety_briefs must have a row
-    for dupilumab x conjunctivitis.
-    Confirms Agent 3 wrote to Snowflake successfully.
-    """
+    """After on-demand run, Snowflake safety_briefs must have a row for dupilumab x conjunctivitis."""
     import os
     import snowflake.connector
     from dotenv import load_dotenv
@@ -183,13 +140,8 @@ def test_snowflake_updated():
     assert row[5] == False                       # generation_error
 
 
-# ── Test 7: Non-existent signal raises ValueError ─────────────────────────────
-
 def test_nonexistent_signal_raises():
-    """
-    Signal not in signals_flagged must raise ValueError with clear message.
-    Confirms load_single_signal() error handling works correctly.
-    """
+    """Signal not in signals_flagged must raise ValueError with clear message."""
     from app.agents.pipeline import run_single_signal
 
     with pytest.raises(ValueError) as exc:
@@ -197,6 +149,7 @@ def test_nonexistent_signal_raises():
 
     print(f"\nCorrectly raised: {exc.value}")
     assert "not found" in str(exc.value).lower()
+
 
 @pytest.fixture(scope="module")
 def tenofovir_result():
