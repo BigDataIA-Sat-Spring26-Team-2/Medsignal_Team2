@@ -20,7 +20,7 @@ Note on stat_score:
     stat_score from state and passes it through unchanged.
 """
 
-from typing import TypedDict, List, Optional
+from typing import Any, TypedDict, List, Optional
 
 
 class Abstract(TypedDict):
@@ -59,7 +59,8 @@ class SignalState(TypedDict):
     lt_count   : int    # cases with life-threatening outcome flag
     stat_score : float  # StatScore ∈ [0, 1] — computed by Branch 2,
                         # not recomputed by Agent 1
-
+    router     : Optional[Any]
+    
     # ── Stage 1: Agent 1 output ──────────────────────────────────────────
     search_queries: Optional[List[str]]  # 3 GPT-4o generated PubMed queries
 
