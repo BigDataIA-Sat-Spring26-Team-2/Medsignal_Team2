@@ -1,5 +1,5 @@
 """
-test_snowflake_connector.py — Snowflake + Spark connectivity test
+tests/integration/test_snowflake_connector.py — Snowflake + Spark connectivity test
 
 Tests three things in sequence:
     1. snowflake-connector-python can connect and run a query
@@ -9,7 +9,7 @@ Tests three things in sequence:
 Run before committing to a Snowflake migration.
 
 Usage:
-    poetry run python pipelines/test_snowflake_connector.py
+    poetry run python tests/integration/test_snowflake_connector.py
 
 Required .env variables:
     SNOWFLAKE_ACCOUNT    e.g. abc12345.us-east-1
@@ -42,10 +42,6 @@ structlog.configure(
 )
 logger = structlog.get_logger()
 
-# ---------------------------------------------------------------------------
-# Snowflake connection config
-# ---------------------------------------------------------------------------
-
 SNOWFLAKE_ACCOUNT   = os.getenv("SNOWFLAKE_ACCOUNT")
 SNOWFLAKE_USER      = os.getenv("SNOWFLAKE_USER")
 SNOWFLAKE_PASSWORD  = os.getenv("SNOWFLAKE_PASSWORD")
@@ -60,17 +56,11 @@ JDBC_URL_DL  = (
     "snowflake-jdbc/3.14.4/snowflake-jdbc-3.14.4.jar"
 )
 
-# Spark Snowflake connector package
-#SNOWFLAKE_SPARK_PACKAGE = "net.snowflake:spark-snowflake_2.12:2.12.0-spark_3.5"
 SNOWFLAKE_SPARK_PACKAGE = "net.snowflake:spark-snowflake_2.12:2.12.0-spark_3.3"
 KAFKA_PACKAGE           = "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.3"
 
 TEST_TABLE = "medsignal_connector_test"
 
-
-# ---------------------------------------------------------------------------
-# Validate env vars
-# ---------------------------------------------------------------------------
 
 def validate_env() -> bool:
     required = {
@@ -87,15 +77,9 @@ def validate_env() -> bool:
     return True
 
 
-# ---------------------------------------------------------------------------
-# Test 1 — snowflake-connector-python
-# ---------------------------------------------------------------------------
-
 def test_python_connector() -> bool:
     """
     Verifies snowflake-connector-python can connect and run a simple query.
-    This is the connector used for small table reads (rxnorm_cache)
-    and point queries (validation checkpoint).
     """
     logger.info("test1_start", test="snowflake-connector-python")
 
@@ -137,10 +121,6 @@ def test_python_connector() -> bool:
         return False
 
 
-# ---------------------------------------------------------------------------
-# JDBC jar download
-# ---------------------------------------------------------------------------
-
 def ensure_snowflake_jdbc_jar() -> str:
     import urllib.request
 
@@ -164,15 +144,8 @@ def ensure_snowflake_jdbc_jar() -> str:
     return str(JDBC_JAR.resolve())
 
 
-# ---------------------------------------------------------------------------
-# Test 2 — Spark write via Snowflake connector
-# ---------------------------------------------------------------------------
-
 def test_spark_write(spark, jdbc_url: str, jdbc_props: dict) -> bool:
-    """
-    Writes a small test dataframe to Snowflake via the Spark connector.
-    Verifies the connector version is compatible with PySpark 3.5.x.
-    """
+    """Writes a small test dataframe to Snowflake via the Spark connector."""
     from pyspark.sql import Row
     from pyspark.sql.types import (
         IntegerType, StringType, StructField, StructType
@@ -215,15 +188,8 @@ def test_spark_write(spark, jdbc_url: str, jdbc_props: dict) -> bool:
         return False
 
 
-# ---------------------------------------------------------------------------
-# Test 3 — Spark read back
-# ---------------------------------------------------------------------------
-
 def test_spark_read(spark, jdbc_url: str, jdbc_props: dict) -> bool:
-    """
-    Reads back the test table written in Test 2.
-    Verifies the full read/write cycle works end to end.
-    """
+    """Reads back the test table written in test_spark_write."""
     logger.info("test3_start", test="spark_read", table=TEST_TABLE)
 
     try:
@@ -241,10 +207,6 @@ def test_spark_read(spark, jdbc_url: str, jdbc_props: dict) -> bool:
         logger.error("test3_failed", error=str(exc))
         return False
 
-
-# ---------------------------------------------------------------------------
-# Cleanup
-# ---------------------------------------------------------------------------
 
 def cleanup_test_table() -> None:
     """Drops the test table created during testing."""
@@ -268,10 +230,6 @@ def cleanup_test_table() -> None:
         logger.warning("cleanup_failed", error=str(exc))
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
 def main():
     logger.info(
         "snowflake_connector_test_start",
@@ -280,11 +238,9 @@ def main():
         warehouse=SNOWFLAKE_WAREHOUSE,
     )
 
-    # Validate env
     if not validate_env():
         sys.exit(1)
 
-    # Test 1 — Python connector
     t1 = test_python_connector()
     if not t1:
         logger.error(
@@ -293,10 +249,8 @@ def main():
         )
         sys.exit(1)
 
-    # Download Snowflake JDBC jar
     jdbc_jar_path = ensure_snowflake_jdbc_jar()
 
-    # Build JDBC URL and props
     jdbc_url = (
         f"jdbc:snowflake://{SNOWFLAKE_ACCOUNT}.snowflakecomputing.com/"
         f"?db={SNOWFLAKE_DATABASE}"
@@ -309,13 +263,11 @@ def main():
         "driver":   "net.snowflake.client.jdbc.SnowflakeDriver",
     }
 
-    # Set HADOOP_HOME for Windows
     hadoop_home = os.getenv("HADOOP_HOME")
     if hadoop_home:
         os.environ["HADOOP_HOME"] = hadoop_home
         os.environ["PATH"]        = os.environ["PATH"] + f";{hadoop_home}\\bin"
 
-    # Build SparkSession with Snowflake connector
     from pyspark.sql import SparkSession
 
     logger.info("building_spark_session")
@@ -340,20 +292,15 @@ def main():
         logger.error("spark_session_failed", error=str(exc))
         sys.exit(1)
 
-    # Test 2 — Spark write
     t2 = test_spark_write(spark, jdbc_url, jdbc_props)
 
-    # Test 3 — Spark read (only if write passed)
     t3 = False
     if t2:
         t3 = test_spark_read(spark, jdbc_url, jdbc_props)
 
     spark.stop()
-
-    # Cleanup test table
     cleanup_test_table()
 
-    # Summary
     logger.info(
         "test_summary",
         python_connector = "PASSED" if t1 else "FAILED",

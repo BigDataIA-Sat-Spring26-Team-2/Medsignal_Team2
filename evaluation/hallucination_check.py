@@ -95,13 +95,12 @@ def validate_numerical_accuracy(brief: Any, state: Dict[str, Any]) -> Dict[str, 
     matches = re.findall(number_pattern, brief_text)
 
     # Check PRR mentions
-    # NOTE: Only match "prr" or "proportional reporting ratio" specifically
-    # to avoid false positives on "proportion of patients", "proportion of reports", etc.
+    # Look for the PRR keyword BEFORE the number (e.g. "PRR of 10.5", "PRR: 3.5", "PRR 4.2").
+    # The earlier generic regex captures context AFTER the number, so it misses "PRR of X"
+    # patterns where "prr" precedes the value.
     prr_actual = state.get("prr", 0)
-    prr_mentions = [
-        float(num) for num, ctx in matches
-        if "prr" in ctx or "proportional reporting" in ctx
-    ]
+    prr_pattern = r'(?:prr|proportional reporting ratio)\s*(?:of|is|was|:|=)?\s*(\d+(?:\.\d+)?)'
+    prr_mentions = [float(m) for m in re.findall(prr_pattern, brief_text)]
 
     for prr_claimed in prr_mentions:
         # Allow 10% tolerance for rounding
@@ -208,9 +207,13 @@ def validate_priority_action_consistency(brief: Any, state: Dict[str, Any]) -> D
     lt = state.get("lt_count", 0)
     hosp = state.get("hosp_count", 0)
 
-    # Define expected actions per priority tier
+    # Define expected actions per priority tier.
+    # P1 includes MONITOR because mild adverse events (e.g. injection site pain with
+    # no deaths/LT/hosp) correctly receive MONITOR even when the statistical signal is
+    # strong.  Check 5 below catches the inappropriate use of MONITOR when serious
+    # outcomes are present.
     expected_actions = {
-        "P1": ["LABEL_UPDATE", "RESTRICT", "WITHDRAW"],  # High priority — strong action
+        "P1": ["LABEL_UPDATE", "RESTRICT", "WITHDRAW", "MONITOR"],
         "P2": ["LABEL_UPDATE", "RESTRICT", "MONITOR"],   # Good stat, weak lit
         "P3": ["LABEL_UPDATE", "MONITOR"],               # Weak stat, good lit
         "P4": ["MONITOR", "LABEL_UPDATE"]                # Weak both — monitor unless PRR justifies label

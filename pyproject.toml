@@ -40,4 +40,5 @@ pythonpath = ["."]
 markers = [
     "unit: pure logic tests, no external dependencies",
     "live: integration tests, requires ChromaDB loaded",
+    "integration: integration tests, requires Snowflake and OpenAI credentials",
 ]
