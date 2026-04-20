@@ -104,6 +104,7 @@ TASK_CONFIG = {
         "temperature"        : 0,      # proposal p27: temperature=0
         "max_tokens"         : 200,    # proposal p27: max_tokens=200
         "max_tokens_per_run" : int(os.getenv("MAX_TOKENS_QUERY", "500000")),
+        "expected_input_tokens" : 300,
         # 500K tokens ≈ 2,270 Agent 1 calls — covers 2,000+ signals with headroom
         "cost_per_1k_input"  : Decimal("0.00015"),  # gpt-4o-mini: $0.15/1M input
         "cost_per_1k_output" : Decimal("0.00060"),  # gpt-4o-mini: $0.60/1M output
@@ -113,6 +114,7 @@ TASK_CONFIG = {
         "max_tokens"         : 600,    # proposal p27: max_tokens=600
         "max_tokens_per_run" : int(os.getenv("MAX_TOKENS_BRIEF", "5000000")),
         # 5M tokens ≈ 2,380 Agent 3 calls — covers 2,000+ signals with headroom
+        "expected_input_tokens" : 2000,
         "cost_per_1k_input"  : Decimal("0.00015"),
         "cost_per_1k_output" : Decimal("0.00060"),
     },
@@ -227,14 +229,13 @@ class LLMRouter:
         router.reset()   # before next pipeline run
         print(router.get_usage_summary())
     """
-
+    _daily_spend: "DailySpend" = None
+    
     def __init__(self):
         # Run-level counters — reset before each pipeline run
         self.usage: dict[str, TokenUsage] = {
             task: TokenUsage() for task in TASK_CONFIG
         }
-        # Daily spend — persists across runs, resets at midnight automatically
-        self._daily_spend = DailySpend()
 
     def reset(self) -> None:
         """
@@ -346,13 +347,14 @@ class LLMRouter:
         config     = TASK_CONFIG[task]
         last_error = None
 
-        # Pre-flight budget checks using max_tokens as conservative estimate
-        self._check_run_budget(task, config["max_tokens"])
+        expected_input  = config["expected_input_tokens"]
+        expected_output = config["max_tokens"]
+        self._check_run_budget(task, expected_input + expected_output)
 
         estimated_cost = self._estimate_cost(
             task,
-            input_tok  = config["max_tokens"] // 3 * 2,   # ~2/3 input
-            output_tok = config["max_tokens"] // 3,        # ~1/3 output
+            input_tok  = expected_input,
+            output_tok = expected_output,
         )
         self._check_daily_budget(estimated_cost)
 
@@ -381,7 +383,15 @@ class LLMRouter:
                 usage      = response.usage
                 input_tok  = getattr(usage, "prompt_tokens",     config["max_tokens"] // 3 * 2)
                 output_tok = getattr(usage, "completion_tokens", config["max_tokens"] // 3)
-                cost       = self._estimate_cost(task, input_tok, output_tok)
+                actual_cost = None
+                try:
+                    actual_cost = response._hidden_params.get("response_cost")
+                    if actual_cost is not None:
+                        cost = Decimal(str(actual_cost))
+                    else:
+                        cost = self._estimate_cost(task, input_tok, output_tok)
+                except Exception:
+                    cost = self._estimate_cost(task, input_tok, output_tok)
 
                 # Record usage
                 self.usage[task].record(input_tok, output_tok, cost)
@@ -424,3 +434,5 @@ class LLMRouter:
             f"Last error: {last_error}. "
             f"Agents will fall back to template/error handling."
         )
+    
+LLMRouter._daily_spend = DailySpend()
