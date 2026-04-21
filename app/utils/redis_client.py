@@ -196,6 +196,7 @@ def invalidate_signals() -> None:
         keys = client.keys(f"{PREFIX_SIGNALS}:*")
         if keys:
             client.delete(*keys)
+            cache_delete("medsignal:signals:counts")
             log.info("signal_cache_invalidated keys_cleared=%d", len(keys))
         else:
             log.debug("signal_cache_invalidate_noop — no keys found")

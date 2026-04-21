@@ -19,6 +19,7 @@ from typing import Optional
 from app.services.signal_service import (
     get_all_signals,
     get_safety_brief,
+    get_signal_counts
 )
 
 router = APIRouter(prefix="/signals", tags=["signals"])
@@ -49,6 +50,14 @@ def list_signals(
     """
     return get_all_signals(priority=priority, limit=limit, offset=offset, search=search)
 
+@router.get("/count")
+def signal_counts():
+    """
+    Returns total signal count and per-priority tier breakdown.
+    Used by Signal Feed header to show accurate stats independent of pagination.
+    Redis cached (5 min TTL). Invalidated when signals cache is cleared.
+    """
+    return get_signal_counts()
 
 # @router.post("/{drug_key}/{pt}/investigate")
 # def investigate(drug_key: str, pt: str):
