@@ -90,53 +90,6 @@ html, body, .stApp {
 [data-testid="stSidebar"] { display: none !important; }
 .block-container { padding: 0 80px !important; max-width: 100% !important; }
 
-/* ── Topbar — matches signal_feed exactly ── */
-.ms-topbar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    height: 60px;
-    padding: 0 48px;
-    background: var(--bg-surface);
-    border-bottom: 1px solid var(--border);
-    position: sticky;
-    top: 0;
-    z-index: 200;
-}
-.ms-brand {
-    font-family: var(--font-display);
-    font-size: 20px;
-    font-weight: 700;
-    letter-spacing: -0.3px;
-    color: var(--text-primary);
-}
-.ms-brand span { color: var(--accent); }
-.ms-nav { display: flex; gap: 4px; }
-.ms-navlink {
-    font-family: var(--font-body);
-    font-size: 14px;
-    font-weight: 500;
-    color: var(--text-secondary);
-    text-decoration: none;
-    padding: 7px 16px;
-    border-radius: 7px;
-    transition: background 0.12s, color 0.12s;
-}
-.ms-navlink:hover  { background: var(--bg-elevated); color: var(--text-primary); }
-.ms-navlink.active { background: var(--bg-elevated); color: var(--text-primary); }
-.ms-topbar-right { display: flex; align-items: center; }
-.ms-live {
-    display: flex; align-items: center; gap: 8px;
-    font-family: var(--font-mono); font-size: 13px;
-    color: var(--text-muted);
-}
-.ms-live-dot {
-    width: 6px; height: 6px; border-radius: 50%;
-    background: var(--p4);
-    animation: blink 2.5s ease-in-out infinite;
-}
-@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.25} }
-
 /* ── Layout — matches signal_feed wrap ── */
 /* ── Layout — matches signal_feed wrap ── */
 .ms-wrap {
@@ -581,24 +534,12 @@ def pc(priority: str) -> str:
 
 # ── Topbar ────────────────────────────────────────────────────────────────────
 
-st.markdown(f"""
-<div class="ms-topbar">
-    <div class="ms-brand">Med<span>Signal</span></div>
-    <nav class="ms-nav">
-        <a class="ms-navlink" href="/signal_feed" target="_self">Signal Feed</a>
-        <a class="ms-navlink active" href="/signal_detail" target="_self">Signal Detail</a>
-        <a class="ms-navlink" href="/hitl_queue" target="_self">Review Queue</a>
-        <a class="ms-navlink" href="/evaluation" target="_self">Evaluation</a>
-        <a class="ms-navlink" href="/metrics" target="_self">Metrics</a>
-        <a class="ms-navlink" href="/evidence_explorer" target="_self">Evidence</a>
-    </nav>
-    <div class="ms-live">
-        <div class="ms-live-dot"></div>
-        {datetime.utcnow().strftime("%d %b %Y")}
-    </div>
-</div>
-""", unsafe_allow_html=True)
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from components.topbar import render_topbar
 
+render_topbar("Signal Detail")
 
 # ── Data & Lazy Loading State ────────────────────────────────────────────────
 
