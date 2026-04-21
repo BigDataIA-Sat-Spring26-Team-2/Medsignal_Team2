@@ -520,7 +520,8 @@ def ct(sigs, tier):
 # ── Session state ─────────────────────────────────────────────────────────────
 
 for k, v in [("submitted",{}),("expanded",{}),
-              ("filter_tier","All"),("api_error",None)]:
+              ("filter_tier","All"),("api_error",None),
+              ("page_size",20)]:
     if k not in st.session_state:
         st.session_state[k] = v
 
@@ -608,6 +609,8 @@ with col_f:
         label_visibility="collapsed",
         key="tier_select",
     )
+    if tf != st.session_state["filter_tier"]:
+        st.session_state["page_size"] = 20
     st.session_state["filter_tier"] = tf
 
 if tf != "All":
@@ -634,10 +637,11 @@ if not pending:
 
 st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
+visible = pending[:st.session_state["page_size"]]
 
 # ── Cards ─────────────────────────────────────────────────────────────────────
 
-for signal in pending:
+for signal in visible:
     drug_key   = signal.get("drug_key","")
     pt_val     = signal.get("pt","")
     priority   = (signal.get("priority") or "P4").upper()
@@ -787,6 +791,28 @@ for signal in pending:
 <div style="height:16px;"></div>
 """, unsafe_allow_html=True)
 
+
+# ── Load More ────────────────────────────────────────────────────────────────
+
+if len(visible) < len(pending):
+    remaining = len(pending) - len(visible)
+    more_col, all_col, _ = st.columns([2, 2, 6])
+    with more_col:
+        if st.button(
+            f"Load More (+20)",
+            key="load_more",
+            use_container_width=True,
+        ):
+            st.session_state["page_size"] += 20
+            st.rerun()
+    with all_col:
+        if st.button(
+            f"Load All ({len(pending)} total)",
+            key="load_all",
+            use_container_width=True,
+        ):
+            st.session_state["page_size"] = len(pending)
+            st.rerun()
 
 # ── Decided this session ──────────────────────────────────────────────────────
 
