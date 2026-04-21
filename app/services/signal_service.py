@@ -46,10 +46,38 @@ log = logging.getLogger(__name__)
 
 # ── Snowflake queries — called only on cache miss ─────────────────────────────
 
-def _query_signals(priority: Optional[str], limit: int) -> list:
-    """Query signals_flagged LEFT JOIN safety_briefs."""
-    priority_filter = "AND sb.priority = %s" if priority else ""
-    params = [priority, limit] if priority else [limit]
+def _query_signals(
+    priority: Optional[str],
+    limit: int,
+    offset: int = 0,
+    search: Optional[str] = None,
+) -> list:
+    """
+    Query signals_flagged with optional filtering and pagination.
+
+    Args:
+        priority: Filter by priority tier (P1/P2/P3/P4). None = all priorities.
+        limit: Maximum number of signals to return.
+        offset: Number of signals to skip (for pagination).
+        search: Case-insensitive substring match on drug_key or pt.
+
+    Returns:
+        List of signal dicts ordered by priority tier, then PRR descending.
+    """
+    filters = ["1=1"]
+    params = []
+
+    if priority:
+        filters.append("sb.priority = %s")
+        params.append(priority)
+
+    if search:
+        filters.append("(sf.drug_key ILIKE %s OR sf.pt ILIKE %s)")
+        search_pattern = f"%{search}%"
+        params.extend([search_pattern, search_pattern])
+
+    where_clause = " AND ".join(filters)
+    params.extend([limit, offset])
 
     query = f"""
         SELECT
@@ -69,7 +97,7 @@ def _query_signals(priority: Optional[str], limit: int) -> list:
         FROM signals_flagged sf
         LEFT JOIN safety_briefs sb
             ON sf.drug_key = sb.drug_key AND sf.pt = sb.pt
-        WHERE 1=1 {priority_filter}
+        WHERE {where_clause}
         ORDER BY
             CASE sb.priority
                 WHEN 'P1' THEN 1
@@ -79,13 +107,13 @@ def _query_signals(priority: Optional[str], limit: int) -> list:
                 ELSE 5
             END,
             sf.prr DESC
-        LIMIT %s
+        LIMIT %s OFFSET %s
     """
 
     conn = get_conn()
-    cur  = conn.cursor()
+    cur = conn.cursor()
     cur.execute(query, params)
-    rows    = cur.fetchall()
+    rows = cur.fetchall()
     columns = [desc[0].lower() for desc in cur.description]
     cur.close()
     conn.close()
@@ -145,22 +173,44 @@ def _query_brief(drug_key: str, pt: str) -> Optional[dict]:
 
 def get_all_signals(
     priority: Optional[str] = None,
-    limit   : int           = 200,
+    limit: int = 200,
+    offset: int = 0,
+    search: Optional[str] = None,
 ) -> list:
     """
-    Returns all flagged signals.
-    Checks Redis first — queries Snowflake only on cache miss.
+    Returns flagged signals with optional filtering and pagination.
+
+    Args:
+        priority: Filter by priority tier (P1/P2/P3/P4).
+        limit: Maximum signals to return (default: 200).
+        offset: Skip first N signals for pagination (default: 0).
+        search: Case-insensitive substring match on drug_key or pt.
+
+    Returns:
+        List of signal dicts. Redis cached (5 min TTL) unless search is active.
+
+    Notes:
+        Search queries bypass cache to ensure fresh results.
+        Pagination queries bypass cache to prevent cache explosion.
     """
-    key    = signal_cache_key(priority, limit)
-    cached = cache_get(key)
+    use_cache = (offset == 0 and search is None)
 
-    if cached is not None:
-        log.info("signals_cache_hit priority=%s limit=%d", priority, limit)
-        return cached
+    if use_cache:
+        key = signal_cache_key(priority, limit)
+        cached = cache_get(key)
+        if cached is not None:
+            log.info("signals_cache_hit priority=%s limit=%d", priority, limit)
+            return cached
 
-    log.info("signals_cache_miss — querying Snowflake priority=%s", priority)
-    signals = _query_signals(priority, limit)
-    cache_set(key, signals, ttl=TTL_SIGNALS)
+    log.info(
+        "signals_cache_miss — querying Snowflake priority=%s offset=%d search=%s",
+        priority, offset, search
+    )
+    signals = _query_signals(priority, limit, offset, search)
+
+    if use_cache:
+        cache_set(key, signals, ttl=TTL_SIGNALS)
+
     return signals
 
 

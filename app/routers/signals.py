@@ -26,15 +26,28 @@ router = APIRouter(prefix="/signals", tags=["signals"])
 
 @router.get("")
 def list_signals(
-    priority: Optional[str] = Query(None, description="Filter by P1/P2/P3/P4"),
-    limit   : int           = Query(200,  description="Max signals to return"),
+    priority: Optional[str] = Query(None, description="Filter by priority tier (P1/P2/P3/P4)"),
+    limit: int = Query(200, ge=1, le=5000, description="Max signals to return"),
+    offset: int = Query(0, ge=0, description="Skip first N signals (pagination)"),
+    search: Optional[str] = Query(None, min_length=2, description="Search drug or reaction name"),
 ):
     """
-    Returns all flagged signals from signals_flagged.
-    Redis cached — first call hits Snowflake, subsequent calls return in <10ms.
-    Cache invalidated automatically when Branch 2 re-runs.
+    List flagged signals with optional filtering and pagination.
+
+    Query Parameters:
+        priority: Filter by tier (P1/P2/P3/P4). Omit for all.
+        limit: Max results per page (1-5000). Default: 200.
+        offset: Skip first N signals for pagination. Default: 0.
+        search: Case-insensitive substring match on drug_key or pt (min 2 chars).
+
+    Returns:
+        List of signals ordered by priority tier, then PRR descending.
+
+    Caching:
+        First page (offset=0, no search): Redis cached (5 min TTL).
+        Pagination/search: Direct Snowflake query (no cache).
     """
-    return get_all_signals(priority=priority, limit=limit)
+    return get_all_signals(priority=priority, limit=limit, offset=offset, search=search)
 
 
 # @router.post("/{drug_key}/{pt}/investigate")

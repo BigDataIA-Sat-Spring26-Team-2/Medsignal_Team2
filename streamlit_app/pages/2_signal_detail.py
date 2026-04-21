@@ -90,53 +90,6 @@ html, body, .stApp {
 [data-testid="stSidebar"] { display: none !important; }
 .block-container { padding: 0 80px !important; max-width: 100% !important; }
 
-/* ── Topbar — matches signal_feed exactly ── */
-.ms-topbar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    height: 60px;
-    padding: 0 48px;
-    background: var(--bg-surface);
-    border-bottom: 1px solid var(--border);
-    position: sticky;
-    top: 0;
-    z-index: 200;
-}
-.ms-brand {
-    font-family: var(--font-display);
-    font-size: 20px;
-    font-weight: 700;
-    letter-spacing: -0.3px;
-    color: var(--text-primary);
-}
-.ms-brand span { color: var(--accent); }
-.ms-nav { display: flex; gap: 4px; }
-.ms-navlink {
-    font-family: var(--font-body);
-    font-size: 14px;
-    font-weight: 500;
-    color: var(--text-secondary);
-    text-decoration: none;
-    padding: 7px 16px;
-    border-radius: 7px;
-    transition: background 0.12s, color 0.12s;
-}
-.ms-navlink:hover  { background: var(--bg-elevated); color: var(--text-primary); }
-.ms-navlink.active { background: var(--bg-elevated); color: var(--text-primary); }
-.ms-topbar-right { display: flex; align-items: center; }
-.ms-live {
-    display: flex; align-items: center; gap: 8px;
-    font-family: var(--font-mono); font-size: 13px;
-    color: var(--text-muted);
-}
-.ms-live-dot {
-    width: 6px; height: 6px; border-radius: 50%;
-    background: var(--p4);
-    animation: blink 2.5s ease-in-out infinite;
-}
-@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.25} }
-
 /* ── Layout — matches signal_feed wrap ── */
 /* ── Layout — matches signal_feed wrap ── */
 .ms-wrap {
@@ -418,6 +371,19 @@ section[data-testid="stMain"] > div {
     letter-spacing: 1.5px !important; text-transform: uppercase !important;
     color: var(--text-muted) !important;
 }
+.stTextInput input {
+    background: var(--bg-surface) !important;
+    border: 1px solid var(--border-strong) !important;
+    border-radius: 7px !important;
+    color: var(--text-primary) !important;
+    font-family: var(--font-mono) !important;
+    font-size: 13px !important;
+    padding: 10px 14px !important;
+}
+.stTextInput input:focus {
+    border-color: var(--accent) !important;
+    box-shadow: 0 0 0 1px var(--accent) !important;
+}
 .stSelectbox > div > div {
     background: var(--bg-surface) !important;
     border: 1px solid var(--border-strong) !important;
@@ -468,14 +434,28 @@ section[data-testid="stMain"] > div {
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def fetch_signals():
+def fetch_signals(limit: int = 200, offset: int = 0, search: str = "") -> list:
+    """
+    Fetch signals from API with pagination and search support.
+
+    Args:
+        limit: Maximum signals to fetch per request.
+        offset: Number of signals to skip (for pagination).
+        search: Search query for drug or reaction name.
+
+    Returns:
+        List of signal dicts, or None if API unreachable, or [] on error.
+    """
     try:
         url = f"{API_BASE}/signals"
-        r = requests.get(url, params={"limit": 200}, timeout=60)
+        params = {"limit": limit, "offset": offset}
+        if search:
+            params["search"] = search
+
+        r = requests.get(url, params=params, timeout=60)
         r.raise_for_status()
-        data = r.json()
-        return data
-    except requests.exceptions.ConnectionError as e:
+        return r.json()
+    except requests.exceptions.ConnectionError:
         return None
     except Exception as e:
         import traceback
@@ -554,46 +534,80 @@ def pc(priority: str) -> str:
 
 # ── Topbar ────────────────────────────────────────────────────────────────────
 
-st.markdown(f"""
-<div class="ms-topbar">
-    <div class="ms-brand">Med<span>Signal</span></div>
-    <nav class="ms-nav">
-        <a class="ms-navlink" href="/signal_feed" target="_self">Signal Feed</a>
-        <a class="ms-navlink active" href="/signal_detail" target="_self">Signal Detail</a>
-        <a class="ms-navlink" href="/hitl_queue" target="_self">Review Queue</a>
-        <a class="ms-navlink" href="/evaluation" target="_self">Evaluation</a>
-        <a class="ms-navlink" href="/metrics" target="_self">Metrics</a>
-        <a class="ms-navlink" href="/evidence_explorer" target="_self">Evidence</a>
-    </nav>
-    <div class="ms-live">
-        <div class="ms-live-dot"></div>
-        {datetime.utcnow().strftime("%d %b %Y")}
-    </div>
-</div>
-""", unsafe_allow_html=True)
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from components.topbar import render_topbar
 
+render_topbar("Signal Detail")
 
-# ── Data ──────────────────────────────────────────────────────────────────────
+# ── Data & Lazy Loading State ────────────────────────────────────────────────
 
-signals = fetch_signals()
+# Initialize session state for lazy loading
+if "signal_offset" not in st.session_state:
+    st.session_state.signal_offset = 0
+if "signal_batch_size" not in st.session_state:
+    st.session_state.signal_batch_size = 200
+if "all_signals" not in st.session_state:
+    st.session_state.all_signals = []
+if "search_query" not in st.session_state:
+    st.session_state.search_query = ""
+if "has_more_signals" not in st.session_state:
+    st.session_state.has_more_signals = True
 
-if signals is None:
-    st.markdown(f"""
-    <div class="ms-wrap">
+# Search box (placed before data fetch to handle input)
+st.markdown('<div class="ms-wrap">', unsafe_allow_html=True)
+search_input = st.text_input(
+    "🔍 Search signals",
+    value=st.session_state.search_query,
+    placeholder="Search by drug name or reaction...",
+    help="Type at least 2 characters to search",
+    key="search_box"
+)
+
+# Reset offset if search query changed
+if search_input != st.session_state.search_query:
+    st.session_state.search_query = search_input
+    st.session_state.signal_offset = 0
+    st.session_state.all_signals = []
+    st.session_state.has_more_signals = True
+
+# Fetch initial batch or more signals if offset changed
+search_query = st.session_state.search_query if len(st.session_state.search_query) >= 2 else ""
+signals_batch = fetch_signals(
+    limit=st.session_state.signal_batch_size,
+    offset=st.session_state.signal_offset,
+    search=search_query
+)
+
+# Handle API errors
+if signals_batch is None:
+    st.markdown("""
         <div class="ms-error">
-            Cannot reach MedSignal API —
-            run: poetry run uvicorn app.main:app --reload --port 8001
+            Cannot reach MedSignal API — run: poetry run uvicorn app.main:app --reload --port 8001
         </div>
-    </div>
     """, unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
     st.stop()
 
+# Append new batch to accumulated signals
+if st.session_state.signal_offset == 0:
+    st.session_state.all_signals = signals_batch
+else:
+    st.session_state.all_signals.extend(signals_batch)
+
+# Check if more signals available
+st.session_state.has_more_signals = len(signals_batch) == st.session_state.signal_batch_size
+
+signals = st.session_state.all_signals
+
 if not signals:
-    st.markdown("""
-    <div class="ms-wrap">
-        <div class="ms-error">No signals found. Run Branch 2 and the agent pipeline first.</div>
-    </div>
+    search_msg = f" matching '{search_query}'" if search_query else ""
+    st.markdown(f"""
+        <div class="ms-error">No signals found{search_msg}.
+        {'Try a different search term.' if search_query else 'Run Branch 2 and agent pipeline first.'}</div>
     """, unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
     st.stop()
 
 # ── Split into investigated vs uninvestigated ─────────────────────────────────
@@ -629,9 +643,19 @@ uninv_options = [
 ]
 
 
-# ── Page wrap ─────────────────────────────────────────────────────────────────
+# ── Page wrap (already opened in Data section) ───────────────────────────────
 
-st.markdown('<div class="ms-wrap">', unsafe_allow_html=True)
+# ── Signal counter and Load More ─────────────────────────────────────────────
+
+total_loaded = len(signals)
+search_indicator = f" (filtered by '{search_query}')" if search_query else ""
+st.markdown(f"""
+<div style="text-align:center; padding:8px 0; margin-bottom:12px;">
+    <span style="font-family:var(--font-mono); font-size:13px; color:var(--text-muted);">
+        Showing {total_loaded} signals{search_indicator}
+    </span>
+</div>
+""", unsafe_allow_html=True)
 
 # ── Two-panel selector ────────────────────────────────────────────────────────
 
@@ -695,13 +719,24 @@ st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 if "active_panel" not in st.session_state:
     st.session_state.active_panel = "investigated" if investigated else "uninvestigated"
 
-c1, c2 = st.columns(2, gap="medium")
-with c1:
-    if st.button("View Investigated Signal", key="btn_view_inv", disabled=(inv_idx is None)):
+btn_col1, btn_col2 = st.columns(2, gap="medium")
+
+with btn_col1:
+    if st.button("View Investigated Signal", key="btn_view_inv", disabled=(inv_idx is None), use_container_width=True):
         st.session_state.active_panel = "investigated"
-with c2:
-    if st.button("View Uninvestigated Signal", key="btn_view_uninv", disabled=(uninv_idx is None)):
-        st.session_state.active_panel = "uninvestigated"
+
+with btn_col2:
+    sub_col1, sub_col2 = st.columns([2, 1], gap="small")
+    with sub_col1:
+        if st.button("View Uninvestigated Signal", key="btn_view_uninv", disabled=(uninv_idx is None), use_container_width=True):
+            st.session_state.active_panel = "uninvestigated"
+    with sub_col2:
+        if st.session_state.has_more_signals:
+            if st.button(f"Load More", key="load_more_btn", use_container_width=True):
+                st.session_state.signal_offset += st.session_state.signal_batch_size
+                st.rerun()
+        else:
+            st.button("All ✓", key="all_loaded_btn", disabled=True, use_container_width=True)
 
 st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
 
