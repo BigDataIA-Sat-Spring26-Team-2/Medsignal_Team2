@@ -70,13 +70,13 @@ GOLDEN_SIGNALS = [
     },
     {
         "drug_key"      : "gabapentin",
-        "pt"            : "completed suicide",        # Q1 available PT — cardio-respiratory arrest appears in full year data
+        "pt"            : "cardio-respiratory arrest",        # Q1 available PT — cardio-respiratory arrest appears in full year data
         "fda_comm_date" : date(2023, 12, 1),
         "fda_comm_label": "FDA Drug Safety Communication — December 2023",
     },
     {
         "drug_key"      : "pregabalin",
-        "pt"            : "drug abuse",               # Q1 available PT — coma appears in full year data
+        "pt"            : "coma",               # Q1 available PT — coma appears in full year data
         "fda_comm_date" : date(2023, 12, 1),
         "fda_comm_label": "FDA Drug Safety Communication — December 2023",
     },
@@ -106,13 +106,13 @@ GOLDEN_SIGNALS = [
     },
     {
         "drug_key"      : "bupropion",
-        "pt"            : "completed suicide",        # Q1 available PT — seizure appears in full year data
+        "pt"            : "seizure",        # Q1 available PT — seizure appears in full year data
         "fda_comm_date" : date(2023, 5, 1),
         "fda_comm_label": "FDA Drug Safety Communication — May 2023",
     },
     {
         "drug_key"      : "dapagliflozin",
-        "pt"            : "death",                    # Q1 available PT — glomerular filtration rate decreased appears in full year data
+        "pt"            : "glomerular filtration rate decreased",                    # Q1 available PT — glomerular filtration rate decreased appears in full year data
         "fda_comm_date" : date(2023, 5, 1),
         "fda_comm_label": "FDA Label Update — May 2023",
     },

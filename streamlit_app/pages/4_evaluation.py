@@ -79,27 +79,6 @@ html, body, .stApp {
 [data-testid="stSidebar"] { display: none !important; }
 .block-container { padding: 0 !important; max-width: 100% !important; }
 
-/* ── Topbar ─────────────────────────────────────────────────────────────── */
-.ms-topbar {
-    display:flex; align-items:center; justify-content:space-between;
-    height:60px; padding:0 48px;
-    background:var(--bg-surface); border-bottom:1px solid var(--border);
-    position:sticky; top:0; z-index:200;
-}
-.ms-brand { font-family:var(--font-display); font-size:20px; font-weight:700; letter-spacing:-0.3px; color:var(--text-primary); }
-.ms-brand span { color:var(--accent); }
-.ms-nav { display:flex; gap:4px; }
-.ms-navlink {
-    font-family:var(--font-body); font-size:14px; font-weight:500;
-    color:var(--text-secondary); text-decoration:none;
-    padding:7px 16px; border-radius:7px; transition:background 0.12s,color 0.12s;
-}
-.ms-navlink:hover { background:var(--bg-elevated); color:var(--text-primary); }
-.ms-navlink.active { background:var(--bg-elevated); color:var(--text-primary); }
-.ms-live { display:flex; align-items:center; gap:8px; font-family:var(--font-mono); font-size:13px; color:var(--text-muted); }
-.ms-live-dot { width:6px; height:6px; border-radius:50%; background:var(--p4); animation:blink 2.5s ease-in-out infinite; }
-@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.25} }
-
 /* ── Page header ─────────────────────────────────────────────────────────── */
 .ms-page-header { text-align:center; margin-bottom:44px; }
 .ms-page-title { font-family:var(--font-display); font-size:44px; font-weight:700; color:var(--text-primary); letter-spacing:-1.2px; line-height:1; margin-bottom:12px; }
@@ -171,10 +150,7 @@ html, body, .stApp {
     border: 1px solid rgba(255,255,255,0.06) !important;
     border-radius: 12px !important;
     padding: 24px !important;
-    margin-bottom: 48px !important;
-    max-width: 988px !important;        /* 1100px - 2×56px padding */
-    margin-left: auto !important;
-    margin-right: auto !important;
+    margin: 0 auto 48px auto !important;
 }
 
 /* ── Threshold badge ─────────────────────────────────────────────────────── */
@@ -214,25 +190,12 @@ def fmt_pct(v):
 
 # ── Topbar ────────────────────────────────────────────────────────────────────
 
-st.markdown(f"""
-<div class="ms-topbar">
-    <div class="ms-brand">Med<span>Signal</span></div>
-    <nav class="ms-nav">
-        <a class="ms-navlink" href="/signal_feed" target="_self">Signal Feed</a>
-        <a class="ms-navlink" href="/signal_detail" target="_self">Signal Detail</a>
-        <a class="ms-navlink" href="/hitl_queue" target="_self">Review Queue</a>
-        <a class="ms-navlink active" href="/evaluation" target="_self">Evaluation</a>
-        <a class="ms-navlink" href="/metrics" target="_self">Metrics</a>
-        <a class="ms-navlink" href="/evidence_explorer" target="_self">Evidence</a>
-    </nav>
-    <div class="ms-live">
-        <div class="ms-live-dot"></div>
-        {datetime.utcnow().strftime("%d %b %Y")}
-    </div>
-</div>
-""", unsafe_allow_html=True)
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from components.topbar import render_topbar
 
-
+render_topbar("Evaluation")
 # ── Data fetch ────────────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=300)
@@ -375,14 +338,14 @@ if results:
         marker_line_width=0,
         hovertemplate="%{customdata}<extra></extra>",
         customdata=hover_texts,
-        width=0.55,
+        width=0.45,
     ))
 
     fig.update_traces(
         hoverlabel_align="left",
         hovertemplate="%{customdata}<extra></extra>",
         customdata=hover_texts,
-        width=0.55,
+        width=0.45,
     )
 
     # Median line
@@ -404,8 +367,9 @@ if results:
     fig.update_layout(
         paper_bgcolor="#0E1421",
         plot_bgcolor ="rgba(0,0,0,0)",
+        width=1000,
         height=520,
-        margin=dict(l=20, r=200, t=40, b=0), 
+        margin=dict(l=20, r=40, t=40, b=0), 
         xaxis=dict(
             tickfont=dict(family="JetBrains Mono", size=12, color="#9BAEC8"),
             gridcolor="rgba(255,255,255,0.04)",
@@ -441,7 +405,9 @@ if results:
     )
 
     # Chart in styled container
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    _, col, _ = st.columns([0.5, 9, 0.5])
+    with col:
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
     if not_detected:
         st.markdown(f"""
             <div style="max-width:988px;margin:-32px auto 48px;padding:0 0 0 24px;">
