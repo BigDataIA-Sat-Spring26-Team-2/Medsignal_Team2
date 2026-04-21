@@ -213,6 +213,45 @@ def get_all_signals(
 
     return signals
 
+# ── Count query — called by GET /signals/count ────────────────────────────────
+
+TTL_COUNTS = 300  # same TTL as signals (5 min)
+COUNT_CACHE_KEY = "medsignal:signals:counts"
+
+def get_signal_counts() -> dict:
+    cached = cache_get(COUNT_CACHE_KEY)
+    if cached is not None:
+        log.info("counts_cache_hit")
+        return cached
+
+    conn = get_conn()
+    cur  = conn.cursor()
+    cur.execute("""
+        SELECT
+            COUNT(*)                                   AS total,
+            COUNT_IF(sb.priority = 'P1')               AS p1,
+            COUNT_IF(sb.priority = 'P2')               AS p2,
+            COUNT_IF(sb.priority = 'P3')               AS p3,
+            COUNT_IF(sb.priority = 'P4')               AS p4,
+            COUNT_IF(sb.priority IS NULL)              AS uninvestigated
+        FROM signals_flagged sf
+        LEFT JOIN safety_briefs sb
+            ON sf.drug_key = sb.drug_key AND sf.pt = sb.pt
+    """)
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+
+    counts = {
+        "total": int(row[0]),
+        "P1":    int(row[1]),
+        "P2":    int(row[2]),
+        "P3":    int(row[3]),
+        "P4":    int(row[4]),
+        "uninvestigated": int(row[5]),
+    }
+    cache_set(COUNT_CACHE_KEY, counts, ttl=TTL_COUNTS)
+    return counts
 
 def _clean_row(d: dict) -> dict:
     """
