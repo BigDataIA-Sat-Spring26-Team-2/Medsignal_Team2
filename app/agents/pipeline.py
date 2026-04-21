@@ -241,6 +241,8 @@ def load_golden_signals() -> list:
     )
 
     return signals
+
+
 def _sanitize_state(state: dict) -> dict:
     """
     Recursively convert numpy types to plain Python types.
