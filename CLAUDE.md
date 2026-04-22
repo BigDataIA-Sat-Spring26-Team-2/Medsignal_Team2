@@ -328,7 +328,7 @@ Columns: `prod_ai`, `rxcui`, `canonical_name`
 
 - **All signals routed to HITL queue** — no automated approval path
 - Queue sorted: P1 → P2 → P3 → P4, then StatScore descending within tier
-- **Three decisions:** `approve` / `reject` / `escalate`
+- **Two decisions:** `approve` / `reject`
 - **Decisions are immutable** — never UPDATE, always INSERT new row
 - **Every decision logged** with timestamp in `hitl_decisions`
 
