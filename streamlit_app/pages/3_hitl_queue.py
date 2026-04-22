@@ -389,14 +389,6 @@ div[data-testid="column"]:nth-child(3) [data-testid="stButton"] button {
 div[data-testid="column"]:nth-child(3) [data-testid="stButton"] button:hover {
     background: rgba(247,42,42,0.20) !important;
 }
-div[data-testid="column"]:nth-child(4) [data-testid="stButton"] button {
-    border-color: rgba(234,179,8,0.40) !important;
-    color: #FACC15 !important;
-    background: rgba(234,179,8,0.10) !important;
-}
-div[data-testid="column"]:nth-child(4) [data-testid="stButton"] button:hover {
-    background: rgba(234,179,8,0.20) !important;
-}
 
 /* ── Textarea ───────────────────────────────────────────────────────────── */
 .stTextArea textarea {
@@ -520,7 +512,7 @@ def ct(sigs, tier):
 # ── Session state ─────────────────────────────────────────────────────────────
 
 for k, v in [("submitted",{}),("expanded",{}),
-              ("filter_tier","All"),("api_error",None),
+              ("filter_tier","All"),("search_q",""),("api_error",None),
               ("page_size",20)]:
     if k not in st.session_state:
         st.session_state[k] = v
@@ -598,20 +590,38 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 
-# ── Filter — pure Streamlit widget, no surrounding HTML ──────────────────────
+# ── Filter — pure Streamlit widgets, no surrounding HTML ─────────────────────
 
-col_f, _ = st.columns([2, 8])
+col_s, col_f, _ = st.columns([4, 2, 4])
+with col_s:
+    sq = st.text_input(
+        "SEARCH",
+        value=st.session_state["search_q"],
+        placeholder="Drug name or reaction...",
+        key="search_input",
+        label_visibility="visible",
+    )
+    if sq != st.session_state["search_q"]:
+        st.session_state["page_size"] = 20
+    st.session_state["search_q"] = sq
+
 with col_f:
     tf = st.selectbox(
-        "Filter",
+        "PRIORITY",
         ["All","P1","P2","P3","P4"],
         index=["All","P1","P2","P3","P4"].index(st.session_state["filter_tier"]),
-        label_visibility="collapsed",
+        label_visibility="visible",
         key="tier_select",
     )
     if tf != st.session_state["filter_tier"]:
         st.session_state["page_size"] = 20
     st.session_state["filter_tier"] = tf
+
+if sq:
+    sq_lower = sq.lower()
+    pending = [s for s in pending
+               if sq_lower in (s.get("drug_key") or "").lower()
+               or sq_lower in (s.get("pt") or "").lower()]
 
 if tf != "All":
     pending = [s for s in pending
@@ -752,7 +762,7 @@ for signal in visible:
     # ── REVIEWER NOTE + BUTTONS — own ms-card-mid block ──────────────────
     st.markdown('<div class="ms-card-mid" style="padding-top:16px;">', unsafe_allow_html=True)
 
-    nc, ac, rc, ec = st.columns([4, 1.2, 1.2, 1.2], vertical_alignment="bottom")
+    nc, ac, rc = st.columns([4, 1.2, 1.2], vertical_alignment="bottom")
 
     with nc:
         note = st.text_area(
@@ -773,12 +783,6 @@ for signal in visible:
                      use_container_width=True):
             if post_decision(drug_key, pt_val, brief_id, "REJECT", note):
                 st.session_state["submitted"][card_key] = "REJECT"
-                st.rerun()
-    with ec:
-        if st.button("Escalate", key=f"escalate_{card_key}",
-                     use_container_width=True):
-            if post_decision(drug_key, pt_val, brief_id, "ESCALATE", note):
-                st.session_state["submitted"][card_key] = "ESCALATE"
                 st.rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
@@ -824,8 +828,7 @@ if st.session_state["submitted"]:
     ):
         for key, dec in st.session_state["submitted"].items():
             drug, pt_v = key.split("|",1)
-            color = {"APPROVE":"#4ADE80","REJECT":"#F87171",
-                     "ESCALATE":"#FACC15"}.get(dec,"#7B8DB0")
+            color = {"APPROVE":"#4ADE80","REJECT":"#F87171"}.get(dec,"#7B8DB0")
             st.markdown(
                 f'<div style="font-family:var(--font-mono);font-size:13px;'
                 f'padding:10px 0;border-bottom:1px solid var(--border);'

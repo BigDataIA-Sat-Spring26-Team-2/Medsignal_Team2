@@ -9,6 +9,6 @@ from pydantic import BaseModel
 class HITLDecision(BaseModel):
     drug_key     : str
     pt           : str
-    decision     : str          # APPROVE / REJECT / ESCALATE
+    decision     : str          # APPROVE / REJECT
     reviewer_note: Optional[str] = None
     brief_id     : Optional[int] = None

@@ -111,7 +111,7 @@ TASK_CONFIG = {
     },
     "brief_generation": {
         "temperature"        : 0,      # proposal p27: temperature=0
-        "max_tokens"         : 600,    # proposal p27: max_tokens=600
+        "max_tokens"         : 1000,    # proposal p27: max_tokens=600
         "max_tokens_per_run" : int(os.getenv("MAX_TOKENS_BRIEF", "5000000")),
         # 5M tokens ≈ 2,380 Agent 3 calls — covers 2,000+ signals with headroom
         "expected_input_tokens" : 2000,
