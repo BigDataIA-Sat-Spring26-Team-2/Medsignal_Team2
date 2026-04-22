@@ -144,6 +144,7 @@ def _query_brief(drug_key: str, pt: str) -> Optional[dict]:
             sb.brief_text,
             sb.key_findings,
             sb.pmids_cited,
+            sb.search_queries,
             sb.recommended_action,
             sb.model_used,
             sb.generation_error,
@@ -217,14 +218,14 @@ def get_all_signals(
 def _clean_row(d: dict) -> dict:
     """
     Convert Snowflake types to JSON-serializable Python types.
-    VARIANT columns (key_findings, pmids_cited) come back as
+    VARIANT columns (key_findings, pmids_cited, search_queries) come back as
     raw JSON strings — parse them into Python lists.
     """
     cleaned = {}
     for k, v in d.items():
         if isinstance(v, Decimal):
             cleaned[k] = float(v)
-        elif k in ("key_findings", "pmids_cited"):
+        elif k in ("key_findings", "pmids_cited", "search_queries"):
             # Snowflake VARIANT — may be string or already parsed
             if isinstance(v, str):
                 try:

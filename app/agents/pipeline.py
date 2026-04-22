@@ -337,6 +337,9 @@ def build_initial_state(signal: dict) -> SignalState:
     Branch 2 and stored in signals_flagged. Agent 1 reads it from
     state and confirms it — does not recompute.
 
+    LLMRouter is NOT included in state (not msgpack-serializable).
+    Agents import the shared router directly from this module.
+
     Returns:
         SignalState TypedDict with Stage 0 populated,
         all agent output fields set to None.
@@ -351,7 +354,6 @@ def build_initial_state(signal: dict) -> SignalState:
         "hosp_count" : int(signal["hosp_count"]),
         "lt_count"   : int(signal["lt_count"]),
         "stat_score" : float(signal["stat_score"]) if signal["stat_score"] is not None else None,
-        "router"     : router,
 
         # Stage 1 — Agent 1 outputs
         "search_queries": None,

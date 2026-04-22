@@ -184,9 +184,13 @@ def generate_queries(
     )
 
     try:
-        # Use shared router from state if available; create a fresh one for
-        # direct test calls. Budget tracking only works with the shared instance.
-        router = (state.get("router") if state else None) or LLMRouter()
+        # Import shared router from pipeline for budget tracking.
+        # Falls back to creating a fresh instance for standalone test calls.
+        try:
+            from app.agents.pipeline import router as shared_router
+            router = shared_router
+        except (ImportError, AttributeError):
+            router = LLMRouter()
 
         response = router.complete(
             messages=[

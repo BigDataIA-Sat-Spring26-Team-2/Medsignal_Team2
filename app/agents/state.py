@@ -47,6 +47,10 @@ class SignalState(TypedDict):
         Stage 1 — Agent 1 (Signal Detector) fills search_queries
         Stage 2 — Agent 2 (Literature Retriever) fills abstracts + lit_score
         Stage 3 — Agent 3 (Assessor) fills priority + brief
+
+    Note on LLMRouter:
+        Router is NOT in state (not msgpack-serializable for checkpointing).
+        Agents import the shared router directly from app.agents.pipeline.
     """
 
     # ── Stage 0: input from signals_flagged ──────────────────────────────
@@ -59,8 +63,7 @@ class SignalState(TypedDict):
     lt_count   : int    # cases with life-threatening outcome flag
     stat_score : float  # StatScore ∈ [0, 1] — computed by Branch 2,
                         # not recomputed by Agent 1
-    router     : Optional[Any]
-    
+
     # ── Stage 1: Agent 1 output ──────────────────────────────────────────
     search_queries: Optional[List[str]]  # 3 GPT-4o generated PubMed queries
 
