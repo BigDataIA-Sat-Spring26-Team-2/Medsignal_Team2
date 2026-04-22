@@ -217,9 +217,8 @@ html, body, .stApp {
     border-radius: 6px;
     border: 1px solid;
 }
-.ms-decision-badge.approve  { color:#4ADE80; background:rgba(34,197,94,0.10);  border-color:rgba(34,197,94,0.40);  }
-.ms-decision-badge.reject   { color:#F87171; background:rgba(247,42,42,0.10);  border-color:rgba(247,42,42,0.40);  }
-.ms-decision-badge.escalate { color:#FACC15; background:rgba(234,179,8,0.10);  border-color:rgba(234,179,8,0.40);  }
+.ms-decision-badge.approve { color:#4ADE80; background:rgba(34,197,94,0.10); border-color:rgba(34,197,94,0.40); }
+.ms-decision-badge.reject  { color:#F87171; background:rgba(247,42,42,0.10); border-color:rgba(247,42,42,0.40); }
 
 /* Metrics row */
 .ms-metrics {
@@ -695,7 +694,7 @@ for signal in signals:
     computed   = signal.get("computed_at")
 
     hitl_decision = signal.get("hitl_decision")
-    _decision_labels = {"APPROVE": "Approved", "REJECT": "Rejected", "ESCALATE": "Escalated"}
+    _decision_labels = {"APPROVE": "Approved", "REJECT": "Rejected"}
     decision_badge_html = (
         f'<div class="ms-decision-badge {hitl_decision.lower()}">{_decision_labels.get(hitl_decision.upper(), hitl_decision)}</div>'
         if hitl_decision else ""

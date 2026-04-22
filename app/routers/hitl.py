@@ -157,7 +157,7 @@ def post_decision(decision: HITLDecision):
     Inserts a new row — never updates existing rows.
     Updates Redis queue depth so Prometheus reads fresh count immediately.
     """
-    valid = {"APPROVE", "REJECT", "ESCALATE"}
+    valid = {"APPROVE", "REJECT"}
     if decision.decision.upper() not in valid:
         raise HTTPException(
             status_code=422,

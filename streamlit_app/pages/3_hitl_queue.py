@@ -389,14 +389,6 @@ div[data-testid="column"]:nth-child(3) [data-testid="stButton"] button {
 div[data-testid="column"]:nth-child(3) [data-testid="stButton"] button:hover {
     background: rgba(247,42,42,0.20) !important;
 }
-div[data-testid="column"]:nth-child(4) [data-testid="stButton"] button {
-    border-color: rgba(234,179,8,0.40) !important;
-    color: #FACC15 !important;
-    background: rgba(234,179,8,0.10) !important;
-}
-div[data-testid="column"]:nth-child(4) [data-testid="stButton"] button:hover {
-    background: rgba(234,179,8,0.20) !important;
-}
 
 /* ── Textarea ───────────────────────────────────────────────────────────── */
 .stTextArea textarea {
@@ -752,7 +744,7 @@ for signal in visible:
     # ── REVIEWER NOTE + BUTTONS — own ms-card-mid block ──────────────────
     st.markdown('<div class="ms-card-mid" style="padding-top:16px;">', unsafe_allow_html=True)
 
-    nc, ac, rc, ec = st.columns([4, 1.2, 1.2, 1.2], vertical_alignment="bottom")
+    nc, ac, rc = st.columns([4, 1.2, 1.2], vertical_alignment="bottom")
 
     with nc:
         note = st.text_area(
@@ -773,12 +765,6 @@ for signal in visible:
                      use_container_width=True):
             if post_decision(drug_key, pt_val, brief_id, "REJECT", note):
                 st.session_state["submitted"][card_key] = "REJECT"
-                st.rerun()
-    with ec:
-        if st.button("Escalate", key=f"escalate_{card_key}",
-                     use_container_width=True):
-            if post_decision(drug_key, pt_val, brief_id, "ESCALATE", note):
-                st.session_state["submitted"][card_key] = "ESCALATE"
                 st.rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
@@ -824,8 +810,7 @@ if st.session_state["submitted"]:
     ):
         for key, dec in st.session_state["submitted"].items():
             drug, pt_v = key.split("|",1)
-            color = {"APPROVE":"#4ADE80","REJECT":"#F87171",
-                     "ESCALATE":"#FACC15"}.get(dec,"#7B8DB0")
+            color = {"APPROVE":"#4ADE80","REJECT":"#F87171"}.get(dec,"#7B8DB0")
             st.markdown(
                 f'<div style="font-family:var(--font-mono);font-size:13px;'
                 f'padding:10px 0;border-bottom:1px solid var(--border);'
