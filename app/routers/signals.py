@@ -19,6 +19,7 @@ from typing import Optional
 from app.services.signal_service import (
     get_all_signals,
     get_safety_brief,
+    get_signal_counts
 )
 
 router = APIRouter(prefix="/signals", tags=["signals"])
@@ -49,6 +50,14 @@ def list_signals(
     """
     return get_all_signals(priority=priority, limit=limit, offset=offset, search=search)
 
+@router.get("/count")
+def signal_counts():
+    """
+    Returns total signal count and per-priority tier breakdown.
+    Used by Signal Feed header to show accurate stats independent of pagination.
+    Redis cached (5 min TTL). Invalidated when signals cache is cleared.
+    """
+    return get_signal_counts()
 
 # @router.post("/{drug_key}/{pt}/investigate")
 # def investigate(drug_key: str, pt: str):
@@ -80,6 +89,7 @@ def list_signals(
 @router.post("/{drug_key}/{pt}/investigate")
 async def investigate(drug_key: str, pt: str):
     import asyncio
+    import traceback
     from app.agents.pipeline import run_single_signal
 
     try:
@@ -95,8 +105,12 @@ async def investigate(drug_key: str, pt: str):
             "error"   : result.get("error"),
         }
     except ValueError as e:
+        print(f"ValueError in investigate: {e}")
+        traceback.print_exc()
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
+        print(f"Exception in investigate: {type(e).__name__}: {e}")
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Pipeline failed: {e}")
 
 @router.get("/{drug_key}/{pt}/brief")

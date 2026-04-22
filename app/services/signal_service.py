@@ -144,6 +144,7 @@ def _query_brief(drug_key: str, pt: str) -> Optional[dict]:
             sb.brief_text,
             sb.key_findings,
             sb.pmids_cited,
+            sb.search_queries,
             sb.recommended_action,
             sb.model_used,
             sb.generation_error,
@@ -213,18 +214,57 @@ def get_all_signals(
 
     return signals
 
+# ── Count query — called by GET /signals/count ────────────────────────────────
+
+TTL_COUNTS = 300  # same TTL as signals (5 min)
+COUNT_CACHE_KEY = "medsignal:signals:counts"
+
+def get_signal_counts() -> dict:
+    cached = cache_get(COUNT_CACHE_KEY)
+    if cached is not None:
+        log.info("counts_cache_hit")
+        return cached
+
+    conn = get_conn()
+    cur  = conn.cursor()
+    cur.execute("""
+        SELECT
+            COUNT(*)                                   AS total,
+            COUNT_IF(sb.priority = 'P1')               AS p1,
+            COUNT_IF(sb.priority = 'P2')               AS p2,
+            COUNT_IF(sb.priority = 'P3')               AS p3,
+            COUNT_IF(sb.priority = 'P4')               AS p4,
+            COUNT_IF(sb.priority IS NULL)              AS uninvestigated
+        FROM signals_flagged sf
+        LEFT JOIN safety_briefs sb
+            ON sf.drug_key = sb.drug_key AND sf.pt = sb.pt
+    """)
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+
+    counts = {
+        "total": int(row[0]),
+        "P1":    int(row[1]),
+        "P2":    int(row[2]),
+        "P3":    int(row[3]),
+        "P4":    int(row[4]),
+        "uninvestigated": int(row[5]),
+    }
+    cache_set(COUNT_CACHE_KEY, counts, ttl=TTL_COUNTS)
+    return counts
 
 def _clean_row(d: dict) -> dict:
     """
     Convert Snowflake types to JSON-serializable Python types.
-    VARIANT columns (key_findings, pmids_cited) come back as
+    VARIANT columns (key_findings, pmids_cited, search_queries) come back as
     raw JSON strings — parse them into Python lists.
     """
     cleaned = {}
     for k, v in d.items():
         if isinstance(v, Decimal):
             cleaned[k] = float(v)
-        elif k in ("key_findings", "pmids_cited"):
+        elif k in ("key_findings", "pmids_cited", "search_queries"):
             # Snowflake VARIANT — may be string or already parsed
             if isinstance(v, str):
                 try:
