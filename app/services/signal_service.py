@@ -99,15 +99,13 @@ def _query_signals(
         LEFT JOIN safety_briefs sb
             ON sf.drug_key = sb.drug_key AND sf.pt = sb.pt
         LEFT JOIN (
-            SELECT DISTINCT
-                drug_key,
-                pt,
-                FIRST_VALUE(decision) OVER (
-                    PARTITION BY drug_key, pt
-                    ORDER BY decided_at DESC
-                ) AS decision
-            FROM hitl_decisions
-        ) hd ON sf.drug_key = hd.drug_key AND sf.pt = hd.pt
+    SELECT drug_key, pt, decision
+    FROM hitl_decisions
+    QUALIFY ROW_NUMBER() OVER (
+        PARTITION BY drug_key, pt
+        ORDER BY decided_at DESC
+    ) = 1
+) hd ON sf.drug_key = hd.drug_key AND sf.pt = hd.pt
         WHERE {where_clause}
         ORDER BY
             CASE sb.priority
