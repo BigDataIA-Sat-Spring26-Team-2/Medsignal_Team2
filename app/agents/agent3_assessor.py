@@ -249,6 +249,7 @@ Return ONLY a JSON object. No markdown, no explanation, no extra text.
     "brief_text": "2-3 paragraph clinical narrative justifying the recommended action. Cite PMIDs inline.",
     "key_findings": ["finding 1", "finding 2", "finding 3"],
     "pmids_cited": ["pmid1", "pmid2"],
+    "search_queries": {json.dumps(state.get("search_queries", []))},
     "recommended_action": "LABEL_UPDATE",
     "drug_key": "{state["drug_key"]}",
     "pt": "{state["pt"]}",
@@ -349,6 +350,7 @@ def _write_to_snowflake(
                 %s                AS brief_text,
                 PARSE_JSON(%s)    AS key_findings,
                 PARSE_JSON(%s)    AS pmids_cited,
+                PARSE_JSON(%s)    AS search_queries,
                 %s                AS recommended_action,
                 %s                AS model_used,
                 %s                AS input_tokens,
@@ -368,6 +370,7 @@ def _write_to_snowflake(
             brief_text         = source.brief_text,
             key_findings       = source.key_findings,
             pmids_cited        = source.pmids_cited,
+            search_queries     = source.search_queries,
             recommended_action = source.recommended_action,
             model_used         = source.model_used,
             input_tokens       = source.input_tokens,
@@ -379,16 +382,16 @@ def _write_to_snowflake(
             generated_at       = source.generated_at
         WHEN NOT MATCHED THEN INSERT (
             drug_key, pt, stat_score, lit_score, priority,
-            brief_text, key_findings, pmids_cited, recommended_action,
-            model_used, input_tokens, output_tokens,
+            brief_text, key_findings, pmids_cited, search_queries,
+            recommended_action, model_used, input_tokens, output_tokens,
             generation_error, hallucination_score, hallucination_pass,
             hallucination_flags, generated_at
         ) VALUES (
             source.drug_key,     source.pt,          source.stat_score,
             source.lit_score,    source.priority,    source.brief_text,
-            source.key_findings, source.pmids_cited, source.recommended_action,
-            source.model_used,   source.input_tokens, source.output_tokens,
-            source.generation_error, source.hallucination_score,
+            source.key_findings, source.pmids_cited, source.search_queries,
+            source.recommended_action, source.model_used, source.input_tokens,
+            source.output_tokens, source.generation_error, source.hallucination_score,
             source.hallucination_pass, source.hallucination_flags,
             source.generated_at
         )
@@ -402,6 +405,7 @@ def _write_to_snowflake(
             brief.brief_text               if brief else None,
             json.dumps(brief.key_findings) if brief else json.dumps([]),
             json.dumps(brief.pmids_cited)  if brief else json.dumps([]),
+            json.dumps(state.get("search_queries", [])),
             brief.recommended_action       if brief else None,
             MODEL,
             input_tok,

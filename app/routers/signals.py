@@ -89,6 +89,7 @@ def signal_counts():
 @router.post("/{drug_key}/{pt}/investigate")
 async def investigate(drug_key: str, pt: str):
     import asyncio
+    import traceback
     from app.agents.pipeline import run_single_signal
 
     try:
@@ -104,8 +105,12 @@ async def investigate(drug_key: str, pt: str):
             "error"   : result.get("error"),
         }
     except ValueError as e:
+        print(f"ValueError in investigate: {e}")
+        traceback.print_exc()
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
+        print(f"Exception in investigate: {type(e).__name__}: {e}")
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Pipeline failed: {e}")
 
 @router.get("/{drug_key}/{pt}/brief")
