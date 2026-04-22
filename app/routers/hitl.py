@@ -22,7 +22,7 @@ from fastapi import APIRouter, HTTPException
 
 from app.models.hitl import HITLDecision
 from app.utils.snowflake_client import get_conn
-from app.utils.redis_client import set_queue_depth
+from app.utils.redis_client import set_queue_depth, invalidate_signals
 
 log    = logging.getLogger(__name__)
 router = APIRouter(prefix="/hitl", tags=["hitl"])
@@ -197,9 +197,11 @@ def post_decision(decision: HITLDecision):
         pending = _get_pending_count()
         set_queue_depth(pending)
         log.info("redis_queue_depth updated — pending=%d", pending)
+        invalidate_signals()
+        log.info("signal_cache_invalidated after hitl decision")
     except Exception as e:
-        # Queue depth update failing must not block the decision write.
-        log.warning("redis_queue_depth_update_failed error=%s", e)
+        # Cache/queue updates failing must not block the decision write.
+        log.warning("redis_post_decision_update_failed error=%s", e)
 
     return {
         "status"  : "recorded",
