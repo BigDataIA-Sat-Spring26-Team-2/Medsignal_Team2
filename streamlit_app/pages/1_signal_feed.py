@@ -4,16 +4,21 @@ streamlit_app/pages/1_signal_feed.py — Signal Feed
 Rendering rule: every st.markdown() block must be fully self-contained.
 No div opened in one st.markdown() can be closed in another.
 
-Alignment fix: Streamlit native widget rows (st.columns) are wrapped
-in a padding shim so they align with the ms-wrap container (56px sides).
+Pagination:
+    Header stats come from GET /signals/count — always accurate regardless of page.
+    Signal cards load 10 at a time via GET /signals?limit=10&offset=N.
+    "Load More" button appends the next 10 to the accumulated list.
+    Resetting search or priority filter clears the list and restarts from offset=0.
 """
 
+import os
+import sys
 import requests
 import streamlit as st
 from datetime import datetime
-import os
 from pathlib import Path
 from dotenv import load_dotenv
+
 st.set_page_config(
     page_title="MedSignal — Signal Feed",
     page_icon ="⚕",
@@ -21,11 +26,12 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-#API_BASE = "http://localhost:8000"
-
-
 load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env")
 API_BASE = os.getenv("MEDSIGNAL_API_BASE", "http://localhost:8000").strip().strip('"').strip("'").rstrip("/")
+
+PAGE_SIZE = 10
+
+# ── CSS ───────────────────────────────────────────────────────────────────────
 
 st.markdown("""
 <style>
@@ -56,10 +62,12 @@ st.markdown("""
     --p4-border     : rgba(34,197,94,0.25);
     --accent        : #3B82F6;
     --accent-dim    : rgba(59,130,246,0.15);
+    --accent-bright : #60A5FA;
+    --uninvestigated: #A78BFA;
+    --uninvestigated-dim: rgba(167,139,250,0.12);
     --font-display  : 'Syne', sans-serif;
     --font-mono     : 'JetBrains Mono', monospace;
     --font-body     : 'Inter', sans-serif;
-    --wrap-pad      : 56px;   /* must match ms-wrap padding sides */
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -75,115 +83,61 @@ html, body, .stApp {
 [data-testid="stToolbar"],
 [data-testid="stDecoration"],
 [data-testid="stStatusWidget"] { display: none !important; }
-[data-testid="stSidebar"]      { display: none !important; }
-.block-container { padding: 0 !important; max-width: 100% !important; }
+[data-testid="stSidebar"] { display: none !important; }
 
-/* ── Page ───────────────────────────────────────────────────────────────── */
 .ms-wrap {
     max-width: 1100px;
     margin: 0 auto;
-    padding: 48px var(--wrap-pad) 80px;
+    padding: 0 56px;
 }
 
-
-/* ── Streamlit widget styling ───────────────────────────────────────────── */
-.stTextInput label, .stSelectbox label {
-    font-family: var(--font-mono) !important;
-    font-size: 10px !important;
-    font-weight: 500 !important;
-    letter-spacing: 1.5px !important;
-    text-transform: uppercase !important;
-    color: var(--text-muted) !important;
-}
-.stTextInput input {
-    background: var(--bg-surface) !important;
-    border: 1px solid var(--border-strong) !important;
-    border-radius: 7px !important;
-    color: var(--text-primary) !important;
-    font-family: var(--font-mono) !important;
-    font-size: 13px !important;
-}
-.stTextInput input:focus {
-    border-color: var(--accent) !important;
-    box-shadow: 0 0 0 1px var(--accent-dim) !important;
-}
-.stSelectbox > div > div {
-    background: var(--bg-surface) !important;
-    border: 1px solid var(--border-strong) !important;
-    border-radius: 7px !important;
-    color: var(--text-primary) !important;
-    font-family: var(--font-mono) !important;
-    font-size: 13px !important;
-}
-
-/* ── Page header ────────────────────────────────────────────────────────── */
-.ms-page-header {
-    text-align: center;
-    margin-bottom: 44px;
-}
+.ms-page-header { padding: 40px 0 24px; text-align: center;}
 .ms-page-title {
     font-family: var(--font-display);
-    font-size: 44px;
-    font-weight: 700;
-    color: var(--text-primary);
-    letter-spacing: -1.2px;
-    line-height: 1;
-    margin-bottom: 12px;
+    font-size: 32px; font-weight: 700;
+    letter-spacing: -0.5px; color: var(--text-primary);
+    margin-bottom: 8px;
 }
 .ms-page-desc {
-    font-size: 16px;
-    color: var(--text-secondary);
-    line-height: 1.6;
-    max-width: 560px;
-    margin: 0 auto;
+    font-size: 15px; color: var(--text-secondary);
+    line-height: 1.6; max-width: 620px; margin: 0 auto;
 }
 
-/* ── Summary strip ──────────────────────────────────────────────────────── */
 .ms-summary {
-    display: grid;
-    grid-template-columns: repeat(5, 1fr);
-    gap: 12px;
-    margin-bottom: 36px;
+    display: flex; gap: 16px;
+    padding: 20px 0 28px; flex-wrap: wrap;
 }
 .ms-stat {
+    flex: 1; min-width: 120px;
     background: var(--bg-surface);
     border: 1px solid var(--border);
     border-radius: 10px;
-    padding: 20px 16px;
+    padding: 16px 20px;
     text-align: center;
 }
 .ms-stat-label {
     font-family: var(--font-mono);
-    font-size: 11px;
-    font-weight: 500;
-    letter-spacing: 1.4px;
+    font-size: 11px; letter-spacing: 1px;
     text-transform: uppercase;
-    color: var(--text-muted);
-    margin-bottom: 12px;
+    color: var(--text-muted); margin-bottom: 8px;
 }
 .ms-stat-value {
-    font-family: var(--font-mono);
-    font-size: 38px;
-    font-weight: 500;
-    line-height: 1;
+    font-family: var(--font-display);
+    font-size: 28px; font-weight: 700; letter-spacing: -0.5px;
 }
-.v-total { color: var(--text-primary) }
-.v-p1    { color: var(--p1) }
-.v-p2    { color: var(--p2) }
-.v-p3    { color: var(--p3) }
-.v-p4    { color: var(--p4) }
+.v-total { color: var(--text-primary); }
+.v-p1    { color: var(--p1); }
+.v-p2    { color: var(--p2); }
+.v-p3    { color: var(--p3); }
+.v-p4    { color: var(--p4); }
 
-/* ── Count label ────────────────────────────────────────────────────────── */
 .ms-count-label {
     font-family: var(--font-mono);
-    font-size: 11px;
-    letter-spacing: 1.2px;
-    text-transform: uppercase;
-    color: var(--text-muted);
-    padding: 12px 0 20px;
+    font-size: 12px; color: var(--text-muted);
+    padding: 10px 0 18px; letter-spacing: 0.5px;
 }
 
-/* ── Card sections ──────────────────────────────────────────────────────── */
+/* ── Card sections (exact original structure) ─────────────────────────── */
 .ms-card-top {
     background: var(--bg-surface);
     border: 1px solid var(--border);
@@ -194,15 +148,16 @@ html, body, .stApp {
     overflow: hidden;
 }
 .ms-card-top::before {
-    content: '';
-    position: absolute;
-    left: 0; top: 0; bottom: 0;
-    width: 4px;
+    content:'';
+    position:absolute;
+    left:0;top:0;bottom:0;
+    width:4px;
 }
-.ms-card-top.tier-p1::before { background: var(--p1) }
-.ms-card-top.tier-p2::before { background: var(--p2) }
-.ms-card-top.tier-p3::before { background: var(--p3) }
-.ms-card-top.tier-p4::before { background: var(--p4) }
+.ms-card-top.tier-p1::before{background:var(--p1)}
+.ms-card-top.tier-p2::before{background:var(--p2)}
+.ms-card-top.tier-p3::before{background:var(--p3)}
+.ms-card-top.tier-p4::before{background:var(--p4)}
+.ms-card-top.tier-uninvestigated::before{background:var(--uninvestigated)}
 
 .ms-card-bottom {
     background: var(--bg-surface);
@@ -237,7 +192,7 @@ html, body, .stApp {
     color: var(--text-secondary);
     font-weight: 400;
 }
-.ms-card-badges  { display: flex; align-items: center; gap: 10px; }
+.ms-card-badges { display:flex; align-items:center; gap:10px; }
 .ms-priority {
     font-family: var(--font-mono);
     font-size: 13px;
@@ -247,10 +202,11 @@ html, body, .stApp {
     border-radius: 6px;
     border: 1px solid;
 }
-.ms-priority.p1 { color:var(--p1); background:var(--p1-dim); border-color:var(--p1-border) }
-.ms-priority.p2 { color:var(--p2); background:var(--p2-dim); border-color:var(--p2-border) }
-.ms-priority.p3 { color:var(--p3); background:var(--p3-dim); border-color:var(--p3-border) }
-.ms-priority.p4 { color:var(--p4); background:var(--p4-dim); border-color:var(--p4-border) }
+.ms-priority.p1{color:var(--p1);background:var(--p1-dim);border-color:var(--p1-border)}
+.ms-priority.p2{color:var(--p2);background:var(--p2-dim);border-color:var(--p2-border)}
+.ms-priority.p3{color:var(--p3);background:var(--p3-dim);border-color:var(--p3-border)}
+.ms-priority.p4{color:var(--p4);background:var(--p4-dim);border-color:var(--p4-border)}
+.ms-priority.uninvestigated{color:var(--uninvestigated);background:var(--uninvestigated-dim);border-color:rgba(167,139,250,0.30)}
 
 /* Metrics row */
 .ms-metrics {
@@ -344,32 +300,77 @@ html, body, .stApp {
     border-color: var(--p2-border);
 }
 
-/* Timestamp */
+/* Timestamp + view detail */
 .ms-timestamp {
     font-family: var(--font-mono);
     font-size: 11px;
     color: var(--text-dim);
 }
 
-/* View detail link */
-.ms-view-detail {
+/* Load more button */
+.ms-load-more-wrap {
+    text-align: center;
+    padding: 24px 0 40px;
+}
+.ms-all-loaded {
+    text-align: center;
     font-family: var(--font-mono);
     font-size: 12px;
-    font-weight: 500;
+    color: var(--text-muted);
     letter-spacing: 0.5px;
-    color: var(--text-secondary);
-    text-decoration: none;
-    padding: 6px 14px;
-    border: 1px solid var(--border-strong);
-    border-radius: 6px;
-    transition: background 0.12s, color 0.12s;
-}
-.ms-view-detail:hover {
-    background: var(--bg-elevated);
-    color: var(--text-primary);
+    padding: 24px 0 40px;
 }
 
-/* Empty / error */
+/* Streamlit widget overrides */
+.stTextInput label, .stSelectbox label {
+    font-family: var(--font-mono) !important;
+    font-size: 11px !important;
+    letter-spacing: 1.5px !important;
+    text-transform: uppercase !important;
+    color: var(--text-muted) !important;
+}
+.stTextInput input {
+    background: var(--bg-surface) !important;
+    border: 1px solid var(--border-strong) !important;
+    border-radius: 7px !important;
+    color: var(--text-primary) !important;
+    font-family: var(--font-mono) !important;
+    font-size: 13px !important;
+    padding: 10px 14px !important;
+}
+.stTextInput input:focus {
+    border-color: var(--accent) !important;
+    box-shadow: 0 0 0 1px var(--accent) !important;
+}
+.stSelectbox > div > div {
+    background: var(--bg-surface) !important;
+    border: 1px solid var(--border-strong) !important;
+    border-radius: 7px !important;
+    color: var(--text-primary) !important;
+    font-family: var(--font-mono) !important;
+    font-size: 13px !important;
+}
+[data-testid="stButton"] button {
+    font-family: var(--font-mono) !important;
+    font-size: 12px !important; font-weight: 500 !important;
+    letter-spacing: 1px !important; text-transform: uppercase !important;
+    padding: 10px 20px !important; border-radius: 7px !important;
+    border: 1px solid var(--accent) !important;
+    background: var(--accent-dim) !important;
+    color: var(--accent-bright) !important;
+    transition: all 0.12s !important; width: 100% !important;
+}
+[data-testid="stButton"] button:hover { background: var(--accent) !important; color: #fff !important; }
+.stSpinner > div { border-top-color: var(--accent) !important; }
+.ms-error {
+    background: rgba(220,38,38,0.08); border: 1px solid rgba(220,38,38,0.20);
+    border-radius: 10px; padding: 18px 24px;
+    font-family: var(--font-mono); font-size: 13px; color: #F87171; margin-bottom: 24px;
+}
+
+.v-un { color: #A78BFA; } 
+            
+/* Empty state */
 .ms-empty { text-align: center; padding: 80px 40px; }
 .ms-empty-title {
     font-family: var(--font-display);
@@ -377,13 +378,6 @@ html, body, .stApp {
     margin-bottom: 12px; letter-spacing: -0.3px;
 }
 .ms-empty-desc { font-size: 15px; color: var(--text-muted); line-height: 1.6; }
-.ms-error {
-    background: rgba(220,38,38,0.08);
-    border: 1px solid rgba(220,38,38,0.20);
-    border-radius: 10px; padding: 18px 24px;
-    font-family: var(--font-mono);
-    font-size: 13px; color: #F87171; margin-bottom: 24px;
-}
 
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: var(--bg-base); }
@@ -393,11 +387,43 @@ html, body, .stApp {
 """, unsafe_allow_html=True)
 
 
+# ── Topbar ────────────────────────────────────────────────────────────────────
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from components.topbar import render_topbar
+render_topbar("Signal Feed")
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def fetch_signals():
+def fetch_counts() -> dict | None:
+    """
+    GET /signals/count — returns total + per-tier breakdown.
+    Always accurate; independent of pagination state.
+    Returns None if API is unreachable.
+    """
     try:
-        r = requests.get(f"{API_BASE}/signals", timeout=60)
+        r = requests.get(f"{API_BASE}/signals/count", timeout=10)
+        r.raise_for_status()
+        return r.json()
+    except requests.exceptions.ConnectionError:
+        return None
+    except Exception as e:
+        st.session_state["api_error"] = str(e)
+        return {}
+
+
+def fetch_signals(limit: int, offset: int, search: str = "", priority: str = "All") -> list | None:
+    """
+    GET /signals?limit=N&offset=M — paginated signal fetch.
+    Returns None on connection error, [] on other errors.
+    """
+    try:
+        params = {"limit": limit, "offset": offset}
+        if search:
+            params["search"] = search
+        if priority != "All":
+            params["priority"] = priority
+        r = requests.get(f"{API_BASE}/signals", params=params, timeout=60)
         r.raise_for_status()
         return r.json()
     except requests.exceptions.ConnectionError:
@@ -406,18 +432,22 @@ def fetch_signals():
         st.session_state["api_error"] = str(e)
         return []
 
+
 def sbar_color(score, kind):
     if kind == "stat":
         return "#F72A2A" if score >= 0.7 else "#F97316" if score >= 0.5 else "#3B82F6"
     return "#22C55E" if score >= 0.5 else "#EAB308" if score >= 0.3 else "#4A5568"
 
+
 def fsc(v):
     try: return f"{float(v):.3f}"
     except: return "—"
 
+
 def fprr(v):
     try: return f"{float(v):.2f}"
     except: return "—"
+
 
 def fts(ts):
     if not ts: return "—"
@@ -426,37 +456,54 @@ def fts(ts):
         return dt.strftime("%d %b %Y  %H:%M UTC")
     except: return str(ts)
 
-def pc(p):
-    return (p or "p4").lower()
 
-def ct(sigs, tier):
-    # NULL priority defaults to P4 (no safety brief generated yet),
-    # matching the pc() display logic in cards.
-    return sum(1 for s in sigs
-               if ((s.get("priority") or "P4").upper() == tier))
+def pc(p):
+    return (p or "uninvestigated").lower()
 
 
 # ── Session state ─────────────────────────────────────────────────────────────
 
-for k, v in [("api_error", None), ("search_q", ""),
-              ("filter_pri", "All"), ("sort_by", "Priority")]:
+for k, v in [
+    ("api_error",    None),
+    ("search_q",     ""),
+    ("filter_pri",   "All"),
+    ("sort_by",      "Priority"),
+    ("signals_list", None),   # accumulated list of loaded signal dicts
+    ("offset",       0),      # next fetch offset
+    ("has_more",     True),   # False when last batch was smaller than PAGE_SIZE
+]:
     if k not in st.session_state:
         st.session_state[k] = v
 
 
-# ── Topbar ────────────────────────────────────────────────────────────────────
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from components.topbar import render_topbar
+# ── Initial load ──────────────────────────────────────────────────────────────
 
-render_topbar("Signal Feed")
+if st.session_state["signals_list"] is None:
+    batch = fetch_signals(
+        limit    = PAGE_SIZE,
+        offset   = 0,
+        search   = st.session_state["search_q"],
+        priority = st.session_state["filter_pri"],
+    )
+    if batch is None:
+        st.markdown("""
+        <div class="ms-wrap">
+            <div class="ms-error">
+                Cannot reach API at localhost:8000 —
+                run: poetry run uvicorn main:app --reload --port 8000
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        st.stop()
+    st.session_state["signals_list"] = batch
+    st.session_state["offset"]       = PAGE_SIZE
+    st.session_state["has_more"]     = len(batch) == PAGE_SIZE
 
-# ── Data ──────────────────────────────────────────────────────────────────────
 
-signals = fetch_signals()
+# ── Counts (header stats — independent of pagination) ────────────────────────
 
-if signals is None:
+counts = fetch_counts()
+if counts is None:
     st.markdown("""
     <div class="ms-wrap">
         <div class="ms-error">
@@ -467,11 +514,12 @@ if signals is None:
     """, unsafe_allow_html=True)
     st.stop()
 
-n_p1 = ct(signals, "P1")
-n_p2 = ct(signals, "P2")
-n_p3 = ct(signals, "P3")
-n_p4 = ct(signals, "P4")
-
+n_total = counts.get("total", "?")
+n_p1    = counts.get("P1",    "?")
+n_p2    = counts.get("P2",    "?")
+n_p3    = counts.get("P3",    "?")
+n_p4    = counts.get("P4",    "?")
+n_uninvestigated = counts.get("uninvestigated", "?")
 
 # ── Header + summary ──────────────────────────────────────────────────────────
 
@@ -487,7 +535,7 @@ st.markdown(f"""
     <div class="ms-summary">
         <div class="ms-stat">
             <div class="ms-stat-label">Total Signals</div>
-            <div class="ms-stat-value v-total">{len(signals)}</div>
+            <div class="ms-stat-value v-total">{n_total}</div>
         </div>
         <div class="ms-stat">
             <div class="ms-stat-label">P1 — Critical</div>
@@ -505,27 +553,26 @@ st.markdown(f"""
             <div class="ms-stat-label">P4 — Monitor</div>
             <div class="ms-stat-value v-p4">{n_p4}</div>
         </div>
+        <div class="ms-stat">
+            <div class="ms-stat-label">Uninvestigated</div>
+            <div class="ms-stat-value v-un">{n_uninvestigated}</div>
+        </div>
     </div>
 </div>
 """, unsafe_allow_html=True)
 
+# ── Reset pagination when filters change ─────────────────────────────────────
+# Capture pre-widget values to detect changes below.
+_prev_search = st.session_state["search_q"]
+_prev_pri    = st.session_state["filter_pri"]
+
 
 # ── Filter row ────────────────────────────────────────────────────────────────
-# Streamlit native widgets (required for rerun on change).
-# CSS below constrains the horizontal block to ms-wrap width + padding.
 
-search_q   = st.session_state.get("search_q",   "")
-filter_pri = st.session_state.get("filter_pri",  "All")
-sort_by    = st.session_state.get("sort_by",     "Priority")
-
-# ── Filter row — padding enforced via surrounding ms-wrap divs ───────────────
-# Opening half of ms-wrap: sets left offset. Streamlit columns render next.
-# Closing half follows. This is the only reliable way to inset st.columns.
 st.markdown("""
 <style>
-/* Constrain ONLY the filter row horizontal block, not cards */
 div[data-testid="stHorizontalBlock"]:has(div[data-testid="stTextInputRootElement"]) {
-    max-width: 988px !important;      /* 1100 - 2×56 */
+    max-width: 988px !important;
     margin-left: auto !important;
     margin-right: auto !important;
 }
@@ -533,57 +580,68 @@ div[data-testid="stHorizontalBlock"]:has(div[data-testid="stTextInputRootElement
 """, unsafe_allow_html=True)
 
 col_s, col_p, col_o = st.columns([4, 2, 2])
+
 with col_s:
-    new_search = st.text_input("SEARCH", value=search_q,
-                               placeholder="Drug name or reaction...",
-                               key="search_input", label_visibility="visible")
+    new_search = st.text_input(
+        "SEARCH", value=st.session_state["search_q"],
+        placeholder="Drug name or reaction...",
+        key="search_input", label_visibility="visible",
+    )
     st.session_state["search_q"] = new_search
-    search_q = new_search
 
 with col_p:
     pri_opts = ["All", "P1", "P2", "P3", "P4"]
-    new_pri = st.selectbox("PRIORITY", pri_opts,
-                           index=pri_opts.index(filter_pri),
-                           key="priority_select", label_visibility="visible")
+    new_pri = st.selectbox(
+        "PRIORITY", pri_opts,
+        index=pri_opts.index(st.session_state["filter_pri"]),
+        key="priority_select", label_visibility="visible",
+    )
     st.session_state["filter_pri"] = new_pri
-    filter_pri = new_pri
 
 with col_o:
     sort_opts = ["Priority", "PRR", "Cases", "Deaths"]
-    new_sort = st.selectbox("SORT BY", sort_opts,
-                            index=sort_opts.index(sort_by),
-                            key="sort_select", label_visibility="visible")
+    new_sort = st.selectbox(
+        "SORT BY", sort_opts,
+        index=sort_opts.index(st.session_state["sort_by"]),
+        key="sort_select", label_visibility="visible",
+    )
     st.session_state["sort_by"] = new_sort
-    sort_by = new_sort
 
+# If search or priority changed, reset the accumulated list
+if new_search != _prev_search or new_pri != _prev_pri:
+    st.session_state["signals_list"] = None
+    st.session_state["offset"]       = 0
+    st.session_state["has_more"]     = True
+    st.rerun()
 
-# ── Filter + sort ─────────────────────────────────────────────────────────────
+# ── Sort the currently loaded list ────────────────────────────────────────────
+# Note: sort is applied client-side on the loaded batch only.
+# The API already orders by priority then PRR; local sort adds Cases/Deaths.
 
-filtered = signals[:]
-
-if search_q:
-    q = search_q.lower()
-    filtered = [s for s in filtered
-                if q in (s.get("drug_key") or "").lower()
-                or q in (s.get("pt") or "").lower()]
-
-if filter_pri != "All":
-    filtered = [s for s in filtered
-                if (s.get("priority") or "P4").upper() == filter_pri]
+signals = st.session_state["signals_list"][:]
 
 sort_key_map = {
     "Priority": lambda s: {"P1":0,"P2":1,"P3":2,"P4":3}.get(
-        (s.get("priority") or "P4").upper(), 3),  # NULL → P4 → 3
+        (s.get("priority") or "P4").upper(), 3),
     "PRR"     : lambda s: -float(s.get("prr") or 0),
     "Cases"   : lambda s: -int(s.get("drug_reaction_count") or 0),
     "Deaths"  : lambda s: -int(s.get("death_count") or 0),
 }
-if sort_by in sort_key_map:
-    filtered.sort(key=sort_key_map[sort_by])
+if new_sort in sort_key_map:
+    signals.sort(key=sort_key_map[new_sort])
+
+
+# ── Count label ───────────────────────────────────────────────────────────────
+
+loaded = len(signals)
+search_note = f" matching '{new_search}'" if new_search else ""
+filter_note = f" · {new_pri} only" if new_pri != "All" else ""
 
 st.markdown(
     f'<div class="ms-wrap" style="padding-top:0;padding-bottom:0;">'
-    f'<div class="ms-count-label">Showing {len(filtered)} of {len(signals)} signals</div>'
+    f'<div class="ms-count-label">'
+    f'Showing {loaded} of {n_total} signals{search_note}{filter_note}'
+    f'</div>'
     f'</div>',
     unsafe_allow_html=True,
 )
@@ -596,11 +654,13 @@ if st.session_state.get("api_error"):
         unsafe_allow_html=True,
     )
 
-if not filtered:
+if not signals:
     st.markdown("""
-    <div class="ms-empty">
-        <div class="ms-empty-title">No signals match</div>
-        <div class="ms-empty-desc">Try adjusting the search or priority filter.</div>
+    <div class="ms-wrap">
+        <div class="ms-empty">
+            <div class="ms-empty-title">No signals match</div>
+            <div class="ms-empty-desc">Try adjusting the search or priority filter.</div>
+        </div>
     </div>
     """, unsafe_allow_html=True)
     st.stop()
@@ -608,10 +668,10 @@ if not filtered:
 
 # ── Cards ─────────────────────────────────────────────────────────────────────
 
-for signal in filtered:
+for signal in signals:
     drug_key   = signal.get("drug_key", "")
     pt_val     = signal.get("pt", "")
-    priority   = (signal.get("priority") or "P4").upper()
+    priority   = (signal.get("priority") or "uninvestigated").upper()
     stat_score = float(signal.get("stat_score") or 0)
     lit_score  = float(signal.get("lit_score")  or 0)
     prr        = signal.get("prr")
@@ -629,6 +689,8 @@ for signal in filtered:
     hosp_badge  = f'<span style="color:var(--p2);font-weight:600;">{hosp}</span>'  if hosp  else str(hosp)
     lt_badge    = f'<span style="color:var(--p3);font-weight:600;">{lt}</span>'    if lt    else str(lt)
 
+    priority_label = priority if priority != "UNINVESTIGATED" else "—"
+
     st.markdown(f"""
 <div class="ms-wrap" style="padding-top:0;padding-bottom:0;">
 <div class="ms-card-top tier-{pclass}">
@@ -638,7 +700,7 @@ for signal in filtered:
             <div class="ms-pt">{pt_val}</div>
         </div>
         <div class="ms-card-badges">
-            <div class="ms-priority {pclass}">{priority}</div>
+            <div class="ms-priority {pclass}">{priority_label}</div>
         </div>
     </div>
     <div class="ms-metrics">
@@ -689,11 +751,35 @@ for signal in filtered:
 </div>
 <div class="ms-card-bottom">
     <div class="ms-timestamp">Computed {fts(computed)}</div>
-    <a class="ms-view-detail"
-       href="/signal_detail?drug={drug_key}&pt={pt_val}">
-        View Detail →
-    </a>
 </div>
-<div style="height:16px;"></div>
+<div style="height:4px;"></div>
 </div>
 """, unsafe_allow_html=True)
+
+
+# ── Load More / All Loaded ────────────────────────────────────────────────────
+
+st.markdown('<div class="ms-wrap" style="padding-top:0;">', unsafe_allow_html=True)
+
+if st.session_state["has_more"]:
+    col_btn = st.columns([1, 2, 1])[1]
+    with col_btn:
+        if st.button(f"Load More  ·  {loaded} of {n_total} shown"):
+            next_batch = fetch_signals(
+                limit    = PAGE_SIZE,
+                offset   = st.session_state["offset"],
+                search   = st.session_state["search_q"],
+                priority = st.session_state["filter_pri"],
+            )
+            if next_batch is not None:
+                st.session_state["signals_list"] = st.session_state["signals_list"] + next_batch
+                st.session_state["offset"]      += PAGE_SIZE
+                st.session_state["has_more"]     = len(next_batch) == PAGE_SIZE
+            st.rerun()
+else:
+    st.markdown(
+        '<div class="ms-all-loaded">All signals loaded</div>',
+        unsafe_allow_html=True,
+    )
+
+st.markdown("</div>", unsafe_allow_html=True)
