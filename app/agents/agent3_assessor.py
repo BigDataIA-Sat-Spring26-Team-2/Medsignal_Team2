@@ -20,17 +20,16 @@ from app.utils.redis_client import invalidate_brief
 from app.utils.snowflake_client import get_conn
 
 from dotenv import load_dotenv
-from openai import OpenAI
 from pydantic import ValidationError
+
+from app.core.llm_router import LLMRouter
 
 from app.agents.state import SignalState
 from app.models.brief import SafetyBriefOutput
 
 load_dotenv()
 
-log    = logging.getLogger(__name__)
-client = OpenAI()
-
+log   = logging.getLogger(__name__)
 MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 _VALID_ACTIONS = {"MONITOR", "LABEL_UPDATE", "RESTRICT", "WITHDRAW"}
 
@@ -279,11 +278,11 @@ stat_score and lit_score must be floats between 0.0 and 1.0.
 {_build_prompt(state, priority)}"""
 
 
-# ── GPT-4o call ───────────────────────────────────────────────────────────────
+# ── LLM call via router ───────────────────────────────────────────────────────
 
-def _call_gpt4o(prompt: str) -> tuple[dict, int, int]:
-    response = client.chat.completions.create(
-        model=MODEL,
+def _call_llm(prompt: str, router: LLMRouter) -> tuple[dict, int, int]:
+    response = router.complete(
+        task="brief_generation",
         messages=[
             {
                 "role": "system",
@@ -296,7 +295,6 @@ def _call_gpt4o(prompt: str) -> tuple[dict, int, int]:
             },
             {"role": "user", "content": prompt},
         ],
-        temperature=0,
     )
 
     raw        = response.choices[0].message.content.strip()
@@ -320,7 +318,7 @@ def _call_gpt4o(prompt: str) -> tuple[dict, int, int]:
     try:
         return json.loads(raw), input_tok, output_tok
     except json.JSONDecodeError as e:
-        raise ValueError(f"GPT-4o did not return valid JSON: {e}\nOutput: {raw[:300]}")
+        raise ValueError(f"LLM did not return valid JSON: {e}\nOutput: {raw[:300]}")
 
 
 # ── Snowflake writer ──────────────────────────────────────────────────────────
@@ -444,6 +442,7 @@ def agent3_node(state: SignalState) -> dict:
 
     drug_key = state["drug_key"]
     pt       = state["pt"]
+    router   = state.get("router") or LLMRouter()
 
     stat_score = state.get("stat_score")
     if stat_score is None:
@@ -491,7 +490,7 @@ def agent3_node(state: SignalState) -> dict:
                 )
                 prompt = _build_retry_prompt(resolved_state, priority, last_error)
 
-            raw, i_tok, o_tok = _call_gpt4o(prompt)
+            raw, i_tok, o_tok = _call_llm(prompt, router)
             input_tok  += i_tok
             output_tok += o_tok
 
