@@ -85,7 +85,7 @@ html, body, .stApp {
 .ms-page-desc { font-size:16px; color:var(--text-secondary); line-height:1.6; max-width:560px; margin:0 auto; }
 
 /* ── KPI cards ───────────────────────────────────────────────────────────── */
-.ms-kpi-grid { display:grid; grid-template-columns:repeat(5,1fr); gap:12px; margin-bottom:48px; }
+.ms-kpi-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:48px; }
 .ms-kpi {
     background:var(--bg-surface); border:1px solid var(--border);
     border-radius:10px; padding:22px 16px; text-align:center;
@@ -243,6 +243,7 @@ median_lead      = summary.get("median_lead_time")
 positive_dets    = summary.get("positive_detections", 0)
 prr_threshold    = summary.get("prr_threshold", 2.0)
 min_cases        = summary.get("min_cases", 50)
+precision_denominator = summary.get("precision_denominator", flagged)
 
 st.markdown(f"""
 <div style="max-width:1100px;margin:0 auto;padding:48px 56px 0;">
@@ -267,17 +268,12 @@ st.markdown(f"""
         <div class="ms-kpi">
             <div class="ms-kpi-label">Precision</div>
             <div class="ms-kpi-value accent">{fmt_pct(precision)}</div>
-            <div class="ms-kpi-sub">{flagged} / {total_golden}</div>
+            <div class="ms-kpi-sub">{flagged} / {precision_denominator}</div>
         </div>
         <div class="ms-kpi">
             <div class="ms-kpi-label">Median Lead Time</div>
             <div class="ms-kpi-value gold">{fmt_days(median_lead)}</div>
             <div class="ms-kpi-sub">before FDA comm.</div>
-        </div>
-        <div class="ms-kpi">
-            <div class="ms-kpi-label">Early Detections</div>
-            <div class="ms-kpi-value green">{positive_dets}</div>
-            <div class="ms-kpi-sub">positive lead time</div>
         </div>
     </div>
     <div class="ms-threshold">
