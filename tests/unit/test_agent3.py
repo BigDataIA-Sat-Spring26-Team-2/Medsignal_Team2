@@ -316,6 +316,50 @@ def test_normalize_action_maps_prose_variants():
 
 
 @pytest.mark.unit
+def test_agent3_llm_router_total_failure():
+    """
+    When LLMRouter.complete() raises RuntimeError on every call, agent3_node
+    must set error in the returned dict and write generation_error=True to
+    Snowflake. Validates that the LLMRouter wiring handles total LLM failure
+    without crashing the pipeline.
+    """
+    from app.agents.agent3_assessor import agent3_node
+
+    mock_router = MagicMock()
+    mock_router.complete.side_effect = RuntimeError("all models failed")
+
+    mock_state = {
+        "drug_key"      : "bupropion",
+        "pt"            : "seizure",
+        "prr"           : 4.2,
+        "case_count"    : 89,
+        "death_count"   : 0,
+        "hosp_count"    : 0,
+        "lt_count"      : 0,
+        "stat_score"    : 0.78,
+        "lit_score"     : 0.65,
+        "abstracts"     : [],
+        "search_queries": [],
+        "priority"      : None,
+        "brief"         : None,
+        "error"         : None,
+        "router"        : mock_router,
+    }
+
+    with patch("app.agents.agent3_assessor._write_to_snowflake") as mock_write, \
+         patch("app.agents.agent3_assessor.invalidate_brief"):
+
+        result = agent3_node(mock_state)
+
+    assert result["error"] is not None, "error must be set when LLM totally fails"
+    assert result["brief"] is None
+
+    call_kwargs = mock_write.call_args
+    assert call_kwargs.kwargs.get("gen_error") is True or \
+           call_kwargs.args[5] is True  # gen_error is 6th positional arg
+
+
+@pytest.mark.unit
 def test_agent3_node_sets_gen_error_on_double_failure():
     """
     When both GPT-4o attempts return malformed JSON,
