@@ -132,17 +132,6 @@ def get_brief(drug_key: str, pt: str):
 
     return brief
 
-@router.get("/debug")
-def debug():
-    """Temporary — remove after fixing."""
-    from app.services.signal_service import get_all_signals
-    try:
-        result = get_all_signals(priority=None, limit=5)
-        return {"count": len(result), "first": result[0] if result else None}
-    except Exception as e:
-        return {"error": str(e)}
-
-
 @router.post("/cache/invalidate")
 def invalidate_cache():
     """
