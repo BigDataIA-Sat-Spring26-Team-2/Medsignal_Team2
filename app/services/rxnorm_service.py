@@ -323,12 +323,22 @@ def resolve_one(drug_name: str) -> dict:
     Full resolution for one drug name — two API calls:
         1. Name → RxCUI
         2. RxCUI → base ingredient (TTY=IN)
- 
+
+    Combination drugs:
+        "ACETAMINOPHEN\\HYDROCODONE" → split on backslash, take FIRST component
+        Matches logic in spark_branch1.py filter_and_normalize_drug().
+
     Fallback at each step if API fails or returns nothing.
     """
+    # Split combination drugs on backslash, take first component only
+    if "\\" in drug_name:
+        original = drug_name
+        drug_name = drug_name.split("\\")[0].strip()
+        log.info("combination_split %s → %s", original, drug_name)
+
     rxcui = get_rxcui(drug_name)
     time.sleep(SLEEP)
- 
+
     if not rxcui:
         return {"rxcui": None, "canonical": drug_name.lower()}
  

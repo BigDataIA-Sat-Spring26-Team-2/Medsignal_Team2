@@ -336,8 +336,8 @@ pri_total = p1 + p2 + p3 + p4 or 1
 
 n_approve  = int(decision_bdown.get("APPROVE",  0))
 n_reject   = int(decision_bdown.get("REJECT",   0))
-n_escalate = int(decision_bdown.get("ESCALATE", 0))
-dec_total  = n_approve + n_reject + n_escalate or 1
+
+dec_total  = n_approve + n_reject or 1
 
 brief_cov  = round(briefs_total  / signals_total   * 100, 1) if signals_total   else 0.0
 review_cov = round(decisions_total / briefs_total  * 100, 1) if briefs_total    else 0.0
@@ -440,13 +440,7 @@ with col_b:
         </div>
         <div class="ms-bar-val">{n_reject:,} <span class="ms-bar-dim">{pct(n_reject,dec_total):.1f}%</span></div>
     </div>
-    <div class="ms-bar-row">
-        <div class="ms-bar-label">Escalate</div>
-        <div class="ms-bar-track">
-            <div class="ms-bar-fill" style="width:{pct(n_escalate,dec_total):.1f}%;background:#FACC15;"></div>
-        </div>
-        <div class="ms-bar-val">{n_escalate:,} <span class="ms-bar-dim">{pct(n_escalate,dec_total):.1f}%</span></div>
-    </div>
+    
 </div>
 """, unsafe_allow_html=True)
 

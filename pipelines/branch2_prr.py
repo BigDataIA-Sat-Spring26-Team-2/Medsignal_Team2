@@ -22,13 +22,35 @@ log = logging.getLogger(__name__)
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 JUNK_TERMS: set[str] = {
-    "drug ineffective", "product use issue", "off label use", "off-label use",
-    "drug interaction", "no adverse event", "product quality issue",
-    "condition aggravated", "intentional product use issue",
+    # Efficacy / Treatment Failure
+    "drug ineffective",
+    "drug ineffective for unapproved indication",
+    "drug resistance",
+    "therapeutic response decreased",
+    "therapeutic response unexpected",
+    "treatment failure",
+    "no therapeutic response",
+    "condition aggravated",
+
+    # Product Quality / Device Issues
+    "product use issue",
+    "product quality issue",
+    "product contamination issue",
+    "device issue",
+    "device malfunction",
+
+    # Administrative / Misuse
+    "off label use",
+    "off-label use",
+    "medication error",
+    "no adverse event",
+    "drug interaction",
+    "intentional product use issue",
     "product use in unapproved indication",
     "inappropriate schedule of product administration",
     "drug administered to patient of inappropriate age",
-    "expired product administered", "wrong technique in product usage process",
+    "expired product administered",
+    "wrong technique in product usage process",
 }
 
 LATE_QUARTERS: set[str] = {"2023Q3", "2023Q4"}

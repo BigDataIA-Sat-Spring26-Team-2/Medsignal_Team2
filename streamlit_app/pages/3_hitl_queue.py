@@ -461,7 +461,7 @@ div[data-testid="column"]:nth-child(3) [data-testid="stButton"] button:hover {
 
 def fetch_queue():
     try:
-        r = requests.get(f"{API_BASE}/hitl/queue", timeout=15)
+        r = requests.get(f"{API_BASE}/hitl/queue", timeout=60)
         r.raise_for_status()
         return r.json()
     except requests.exceptions.ConnectionError:
@@ -561,7 +561,7 @@ st.markdown(f"""
         <div class="ms-page-title">Review Queue</div>
         <div class="ms-page-desc">
             Signals awaiting pharmacovigilance review, sorted by priority tier
-            then statistical score. Every decision is immutably logged with a UTC timestamp.
+            then statistical score. 
         </div>
     </div>
     <div class="ms-summary">
@@ -636,11 +636,8 @@ if st.session_state["api_error"]:
 if not pending:
     st.markdown("""
     <div class="ms-empty">
-        <div class="ms-empty-title">Queue is clear</div>
-        <div class="ms-empty-desc">
-            All signals in this tier have been reviewed.<br>
-            Run the agent pipeline to generate new safety briefs.
-        </div>
+        <div class="ms-empty-title">No signals found</div>
+        
     </div>
     """, unsafe_allow_html=True)
     st.stop()
