@@ -540,8 +540,7 @@ st.markdown(f"""
     <div class="ms-page-header">
         <div class="ms-page-title">Signal Feed</div>
         <div class="ms-page-desc">
-            All flagged drug-reaction signals ranked by priority tier.
-            PRR, StatScore, LitScore and outcome severity visible at a glance.
+            Indication signals require medical knowledge filtering
         </div>
     </div>
     <div class="ms-summary">
