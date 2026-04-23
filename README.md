@@ -1,349 +1,527 @@
-# MedSignal — Real-Time Drug Safety Signal Detection Platform
+# MedSignal — Early Drug Safety Signal Detection
 
-> **DAMG 7245 — Big Data and Intelligent Analytics | Northeastern University | Spring 2026**
+> A scalable pharmacovigilance pipeline that detects drug safety signals from FDA FAERS data faster than current manual processes, using Apache Kafka, Apache Spark, LangGraph agents, and GPT-4o.
 
-MedSignal is a pharmacovigilance platform that detects drug safety signals from FDA FAERS adverse event data, retrieves supporting clinical literature, and generates citation-grounded safety briefs using a three-agent LLM pipeline — reducing a process that takes human analysts days to minutes.
-
----
-
-## The Problem
-
-The FDA receives over 2 million adverse event reports annually through FAERS. The average time from when a signal first appears in that data to when the FDA officially communicates a warning is **6–24 months**. During that window, patients continue to be exposed to preventable harm.
-
-The Vioxx crisis (2004) is the canonical example: cardiovascular risk evidence existed in FAERS for years before the drug was withdrawn. An estimated 88,000–140,000 heart attacks occurred during the detection gap. The problem was not a lack of data — it was a lack of infrastructure to process it intelligently.
-
-MedSignal is that infrastructure.
+**DAMG 7245 — Big Data and Intelligent Systems · Northeastern University · Spring 2026**  
+**Team:** Samiksha · Prachi · Siddharth
 
 ---
 
-## What It Does
+## Table of Contents
 
-```
-FDA FAERS (16M records) ──► Kafka ──► Spark PRR Engine ──► Flagged Signals
-                                                                    │
-PubMed (28K abstracts) ──► ChromaDB + BM25 ◄── Agent 2 (RAG) ◄────┤
-                                                                    │
-Reddit Health Forums ──────────────────────────► Agent 3 (SSS) ◄───┘
-                                                      │
-ClinicalTrials.gov ────────────────────────────────────┘
-                                                      │
-                                              SafetyBrief JSON
-                                              + HITL Review Queue
-                                              + React Dashboard
-```
-
-1. **Spark ingests and processes** 16M FAERS records — 7-file join, RxNorm drug normalisation, PRR/ROR disproportionality scoring across all drug-symptom pairs
-2. **Pairs above threshold** (PRR ≥ 2.0, case count ≥ 3) are flagged and enter the LangGraph agent pipeline
-3. **Agent 1** validates statistical significance and generates targeted PubMed search queries
-4. **Agent 2** performs hybrid retrieval (ChromaDB HNSW + BM25, fused via RRF) over 28K PubMed abstracts
-5. **Agent 3** synthesises all evidence into a structured SafetyBrief with a composite Signal Severity Score (SSS)
-6. **HIGH and CRITICAL signals** are routed to a human reviewer before publication — the HITL gate is architecturally enforced, not optional
+- [What is MedSignal?](#what-is-medsignal)
+- [Key Results](#key-results)
+- [Architecture](#architecture)
+- [Technology Stack](#technology-stack)
+- [Repository Structure](#repository-structure)
+- [Prerequisites](#prerequisites)
+- [Environment Setup](#environment-setup)
+- [Running the Pipeline](#running-the-pipeline)
+- [Running the Application](#running-the-application)
+- [Data Flow](#data-flow)
+- [Agent Pipeline](#agent-pipeline)
+- [Evaluation](#evaluation)
+- [Testing](#testing)
+- [API Reference](#api-reference)
+- [Streamlit Pages](#streamlit-pages)
 
 ---
 
-## Signal Severity Score (SSS)
+## What is MedSignal?
 
-MedSignal's core analytical contribution is a four-dimensional composite score combining independent evidence streams:
+When a drug is approved, safety testing doesn't stop — it moves to the real world. The FDA Adverse Event Reporting System (FAERS) receives over 2 million reports per year from patients, doctors, and manufacturers. But detecting meaningful signals from this data is slow and manual: analysts join 7 files per quarter, compute statistics by hand, search PubMed for literature, and write safety narratives from scratch. By the time the FDA formally communicates a signal, it has often been visible in the data for months.
+
+MedSignal automates this entire pipeline — from raw FAERS ASCII files to a prioritized, literature-grounded safety brief ready for human review — across five layers:
 
 ```
-SSS = 0.40 × StatScore     ← PRR/ROR statistical signal strength
-    + 0.30 × LitScore      ← PubMed RAG evidence quality (hybrid retrieval)
-    + 0.20 × PatientScore  ← Reddit health forum mention frequency
-    + 0.10 × TrialScore    ← ClinicalTrials.gov AE corroboration
+FAERS ZIPs → Kafka → Spark (PRR) → LangGraph Agents → Streamlit HITL
+    L1          L2        L3               L4                 L5
 ```
-
-| SSS Range | Severity | Action |
-|-----------|----------|--------|
-| 0.00 – 0.25 | WEAK | Auto-logged, monitor only |
-| 0.26 – 0.50 | MODERATE | Logged, watch for trend |
-| 0.51 – 0.75 | HIGH | Human review required within 24 hours |
-| 0.76 – 1.00 | CRITICAL | Immediate escalation — HITL gate blocks publication |
-
-**Non-compensatory rule:** StatScore = 0 caps SSS at WEAK regardless of other scores. A drug with strong Reddit mentions and literature support but no statistical signal is never published.
 
 ---
 
-## Tech Stack
+## Key Results
 
-| Layer | Technology | Why |
-|-------|-----------|-----|
-| Message broker | Apache Kafka | Decouples FAERS ingestion from Spark; enables historical replay |
-| Stream processing | Spark Structured Streaming | Distributed 7-file join + PRR aggregation across 16M records |
-| NLP / NER | Spark NLP (BC5CDR) | Biomedical NER model for drug + disease entity extraction, runs as Spark UDF |
-| Data warehouse | PostgreSQL | All structured data — signals, PRR scores, agent traces, HITL decisions |
-| Vector store | ChromaDB + BM25 (hybrid) | Dense HNSW + sparse BM25 fused via RRF — zero retriever overlap confirmed in POC |
-| Cache | Redis | Bloom filter deduplication (16M records), hot signal cache (60s TTL), RxNorm lookup cache |
-| Orchestration | Airflow | FAERS batch DAG + PubMed embedding refresh DAG |
-| LLM | GPT-4o (OpenAI) | Structured JSON output, long context for multi-paper synthesis |
-| Agent framework | LangGraph | Typed Pydantic state machine — Signal Detector → Lit Retriever → Severity Assessor |
-| Backend API | FastAPI | 12 REST endpoints, async-native, auto-generates Swagger docs |
-| Frontend | React + Tailwind | Signal feed, HITL review queue, detection lag evaluation dashboard |
-| Containerisation | Docker Compose | Single command starts entire stack — no cloud account required for dev/demo |
+| Metric | Value |
+|--------|-------|
+| Golden signals detected | 10 / 10 validated (100% precision) |
+| Median detection lead time | 232 days before FDA communication |
+| Total signals flagged | 7,830 across 2023 FAERS data |
+| Input data processed | 5,755,720 drug-reaction pair rows |
+| ChromaDB abstracts | 1,800+ PubMed abstracts across 10 golden drugs |
+| Agent latency | < 120 seconds per signal |
+| PRR validation | Gabapentin × cardio-respiratory arrest: confirmed |
 
 ---
 
 ## Architecture
 
-MedSignal is organized into five layers. Data flows left to right through the backend pipeline and into the agentic layer.
-
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  AGENTIC LAYER                                                  │
-│  LangGraph State Machine                                        │
-│  Agent 1 (Signal Detector) → Agent 2 (Lit Retriever) →         │
-│  Agent 3 (Severity Assessor) → HITL Gate → React Dashboard     │
-└──────────────────────────┬──────────────────────────────────────┘
-                           │
-┌──────────────────────────▼──────────────────────────────────────┐
-│  BACKEND PIPELINE LAYER                                         │
-│                                                                 │
-│  FAERS ZIPs ──► Kafka (faers_cases) ──► Spark ──► PostgreSQL    │
-│                        │               ├── Branch A: BC5CDR NER │
-│  Reddit PRAW ──► Kafka (reddit_posts)  ├── Branch B: RxNorm     │
-│                                        └── Branch C: PRR/ROR    │
-│                                                                 │
-│  PubMed (28K) ──────────────────────────────► ChromaDB + BM25  │
-│  ClinicalTrials.gov ◄──────────────── Agent 1 (live API call)  │
+│  LAYER 1 — DATA PREPARATION (one-time setup)                    │
+│  faers_prep.py → Kafka topics                                   │
+│  rxnorm_cache_builder → Snowflake rxnorm_cache                  │
+│  load_pubmed.py → ChromaDB (1,800+ abstracts)                   │
+└────────────────────────┬────────────────────────────────────────┘
+                         │
+┌────────────────────────▼────────────────────────────────────────┐
+│  LAYER 2 — KAFKA INGESTION                                      │
+│  4 topics: faers_demo · faers_drug · faers_reac · faers_outc    │
+└────────────────────────┬────────────────────────────────────────┘
+                         │
+┌────────────────────────▼────────────────────────────────────────┐
+│  LAYER 3 — SPARK PROCESSING (batch)                             │
+│  Branch 1: dedup → PS filter → RxNorm → join → drug_reaction_pairs (~5M rows) │
+│  Branch 2: PRR computation → quality filters → signals_flagged (~7K signals)  │
+└────────────────────────┬────────────────────────────────────────┘
+                         │ PRR validation checkpoint
+┌────────────────────────▼────────────────────────────────────────┐
+│  LAYER 4 — AGENT PIPELINE                             │
+│  Agent 1 (Signal Detector) → StatScore + GPT-4o search queries  │
+│  Agent 2 (Literature Retriever) → ChromaDB HNSW + BM25 + RRF   │
+│  Agent 3 (Assessor) → P1-P4 priority + GPT-4o SafetyBrief      │
+└────────────────────────┬────────────────────────────────────────┘
+                         │
+┌────────────────────────▼────────────────────────────────────────┐
+│  LAYER 5 — STREAMLIT INTERFACE                                  │
+│  Signal Feed · Signal Detail · HITL Queue · Evaluation          │
+│  Evidence Explorer · Metrics                                    │
 └─────────────────────────────────────────────────────────────────┘
+
+Storage: Snowflake (relational) · ChromaDB (vectors) · Redis (cache)
 ```
-
-### Layer-by-Layer
-
-**Layer 1 — Data Sources**
-FAERS quarterly ZIPs and Reddit posts publish to Kafka. ClinicalTrials.gov is called live by Agent 1 on demand. PubMed abstracts are processed through a one-time embedding pipeline directly to ChromaDB — they are a static RAG corpus, not a streaming source.
-
-**Layer 2 — Ingestion (Kafka)**
-Three topics: `faers_cases`, `reddit_posts`, `signals_flagged`. The FAERS producer joins DEMO + DRUG + REAC + OUTC files on `primaryid` and publishes one JSON message per case. Kafka decouples all producers from the Spark consumer.
-
-**Layer 3 — Stream Processing (Spark)**
-Three parallel branches: (A) BC5CDR NER extracts drug and symptom entities from free-text narratives, (B) RxNorm normalises drug name variants to canonical RxCUI identifiers, (C) PRR and ROR scores are computed over rolling 90-day windows. Pairs above threshold are published to `signals_flagged` and written to PostgreSQL.
-
-**Layer 4 — Agent Pipeline (LangGraph)**
-Three agents in a typed Pydantic state machine. Agent 1 validates statistical significance and generates PubMed search queries. Agent 2 performs hybrid retrieval over ChromaDB (up to 3 query reformulations if relevance falls below threshold). Agent 3 synthesises all evidence into a SafetyBrief. A direct conditional edge from Agent 3 back to Agent 2 triggers when confidence < 0.75.
-
-**Layer 5 — Serving**
-FastAPI exposes 12 REST endpoints. PostgreSQL stores all structured data. ChromaDB serves Agent 2 queries. Redis caches hot signals and deduplicates FAERS records.
 
 ---
 
-## Hybrid Retrieval — Why BM25 + HNSW
+## Technology Stack
 
-Agent 2 uses hybrid retrieval rather than semantic search alone. POC validation on the real 28,014-abstract corpus confirmed **zero overlap** between HNSW (dense) and BM25 (sparse) retrievers across all test queries — the two methods find genuinely different evidence.
-
-The warfarin × skin necrosis case is the clearest example: HNSW returned zero warfarin-specific results from the 500-abstract sample, while BM25 immediately surfaced *"Late-onset warfarin-induced skin necrosis"* at rank 1 through exact token matching. As the corpus grows from 28K to 300K abstracts and new drugs are continuously added, this gap widens.
-
-```
-Query → ChromaDB HNSW (dense, semantic)  ──► top-K dense results
-      → BM25 (sparse, keyword)            ──► top-K sparse results
-                          └──── RRF (k=60) ────► fused final ranking
-```
-
-**Reciprocal Rank Fusion (k=60):** Documents appearing in both lists accumulate scores from both retrievers. `BOTH` source tag = highest confidence. `DENSE` only = semantic match with no exact token overlap. `SPARSE` only = exact keyword match that embedding space missed.
-
----
-
-## Data Sources
-
-| Source | Volume | Role |
-|--------|--------|------|
-| FDA FAERS (2023 Q1 – 2024 Q4) | ~16M records, ~4–5GB uncompressed | Primary signal detection corpus |
-| PubMed/MEDLINE | 28,014 abstracts (~150MB) | RAG knowledge base for Agent 2 |
-| ClinicalTrials.gov | ~500 trials, ~10K AE records | TrialScore component of SSS |
-| Reddit (r/pharmacy, r/ChronicPain, r/AskDocs) | Live stream via PRAW | PatientScore component of SSS |
-| RxNorm (NIH) | Live API calls | Drug name normalisation |
+| Component | Technology |
+|-----------|-----------|
+| Ingestion | Apache Kafka 7.5.0 (Confluent) |
+| Processing | Apache Spark 3.5.x (PySpark) |
+| Relational storage | Snowflake |
+| Vector store | ChromaDB (local PersistentClient) |
+| Embeddings | `all-MiniLM-L6-v2` (HuggingFace, 384-dim) |
+| Agent framework | LangGraph |
+| LLM | GPT-4o / GPT-4o mini (OpenAI) |
+| Output validation | Pydantic v2 |
+| API layer | FastAPI |
+| Cache | Redis 7 |
+| Frontend | Streamlit |
+| Containerization | Docker Compose |
+| Observability | Prometheus |
+| Drug normalization | NIH RxNorm REST API |
+| Dev environment | Poetry |
 
 ---
 
-## Guardrails and HITL
+## Repository Structure
 
-**Input guards**
-- RxNorm normalisation unifies drug name variants before PRR computation ("Ozempic", "semaglutide", "Wegovy" → single RxCUI)
-- PRR minimum case count (≥ 3) prevents single-report noise from entering the agent pipeline
+```
+medsignal/
+├── app/
+│   ├── agents/
+│   │   ├── agent1_detector.py      # StatScore + GPT-4o query generation
+│   │   ├── agent2_retriever.py     # ChromaDB HNSW + BM25 + RRF + LitScore
+│   │   ├── agent3_assessor.py      # Priority tier + SafetyBrief generation
+│   │   ├── pipeline.py             # LangGraph pipeline orchestration
+│   │   └── state.py                # SignalState TypedDict
+│   ├── core/
+│   │   └── llm_router.py           # GPT-4o → Claude Haiku fallback chain
+│   ├── routers/
+│   │   ├── signals.py              # GET /signals, GET /signals/count
+│   │   ├── hitl.py                 # HITL queue and decision endpoints
+│   │   ├── evaluation.py           # Lead time and precision endpoints
+│   │   └── health.py               # Snowflake health check
+│   ├── scripts/
+│   │   ├── download_faers.py       # Download FAERS ZIPs from FDA portal
+│   │   └── load_pubmed.py          # Fetch PubMed abstracts → ChromaDB
+│   ├── services/
+│   │   └── signal_service.py       # Business logic + Redis caching
+│   └── utils/
+│       ├── chromadb_client.py      # Shared ChromaDB client factory
+│       ├── redis_client.py         # Redis cache helpers
+│       └── snowflake_client.py     # Shared Snowflake connection factory
+├── pipelines/
+│   ├── spark_branch1.py            # Kafka → drug_reaction_pairs (~5M rows)
+│   └── branch2_prr.py              # PRR computation → signals_flagged (~7K)
+├── scripts/
+│   └── faers_prep.py               # Thin Kafka producer for FAERS ASCII files
+├── streamlit_app/
+│   ├── app.py                      # Entry point
+│   └── pages/
+│       ├── 1_signal_feed.py        # All signals ranked by priority
+│       ├── 2_signal_detail.py      # SafetyBrief + PMIDs + scores
+│       ├── 3_hitl_queue.py         # Human review queue
+│       ├── 4_evaluation.py         # Detection lead time + precision
+│       ├── 5_metrics.py            # Prometheus observability
+│       └── 6_evidence_explorer.py  # PubMed literature browser
+├── evaluation/
+│   ├── hallucination_check.py      # PMID fabrication detection
+│   └── rubric_scorer.py            # SafetyBrief quality rubric (4 criteria)
+├── tests/
+│   ├── unit/                       # Pure logic tests, no external deps
+│   ├── integration/                # Requires real Snowflake + ChromaDB
+│   └── hypothesis/                 # Property-based tests
+├── docker/
+│   ├── docker-compose.yml          # Kafka + Zookeeper + Redis + ChromaDB
+│   └── kafka_topics.sh             # Create 4 Kafka topics
+├── data/
+│   ├── schema.sql                  # PostgreSQL schema (reference)
+│   └── snowflake_schema.sql        # Snowflake schema
+└── main.py                         # FastAPI application entry point
+```
 
-**Output guards**
-- All LLM outputs validated against Pydantic v2 schemas
-- Citation validator checks every PMID against `pubmed_abstracts` table — ungrounded PMIDs cause brief rejection and agent re-run
-- Confidence < 0.75 triggers automatic deeper retrieval (max 2 retries) before brief is finalised
+---
 
-**HITL Gate**
+## Prerequisites
 
-| Severity | HITL Required | SLA |
-|----------|--------------|-----|
-| WEAK | No — auto-logged | — |
-| MODERATE | No — auto-logged | — |
-| HIGH | Yes — pharmacist approval | 24 hours |
-| CRITICAL | Yes — pharmacist approval | 4 hours |
+- Python 3.11+
+- Poetry (`pip install poetry`)
+- Docker Desktop
+- Java 11+ (required for Apache Spark)
+- Git
 
-HIGH and CRITICAL signals cannot be written to the published signals table without a row in `hitl_decisions`. This is enforced at the database level, not just application logic.
+**API keys required:**
+- Snowflake account (free trial at snowflake.com)
+- OpenAI API key (for GPT-4o)
+- NCBI API key (free at ncbi.nlm.nih.gov/account — raises rate limit from 3 to 10 req/s)
+
+---
+
+## Environment Setup
+
+**1. Clone the repository**
+```bash
+https://github.com/BigDataIA-Sat-Spring26-Team-2/Medsignal_Team2.git
+cd medsignal
+```
+
+**2. Install dependencies**
+```bash
+poetry install
+```
+
+**3. Create `.env` file**
+```bash
+cp .env.example .env
+```
+
+Fill in all values:
+```env
+# Snowflake
+SNOWFLAKE_ACCOUNT=your_account
+SNOWFLAKE_USER=your_user
+SNOWFLAKE_PASSWORD=your_password
+SNOWFLAKE_DATABASE=MEDSIGNAL
+SNOWFLAKE_SCHEMA=PUBLIC
+SNOWFLAKE_WAREHOUSE=your_warehouse
+
+# OpenAI
+OPENAI_API_KEY=sk-...
+
+# NCBI (PubMed)
+NCBI_EMAIL=your@email.com
+NCBI_API_KEY=your_ncbi_key
+
+# ChromaDB
+CHROMADB_MODE=local
+CHROMADB_PATH=./chromadb_store
+
+# Redis
+REDIS_HOST=localhost
+REDIS_PORT=6379
+
+# Kafka
+KAFKA_BOOTSTRAP_SERVERS=localhost:9092
+
+# FastAPI
+MEDSIGNAL_API_BASE=http://localhost:8000
+```
+
+**4. Initialize Snowflake schema**
+```bash
+# Run snowflake_schema.sql in your Snowflake worksheet
+# Or use the Snowflake connector:
+poetry run python -c "
+import snowflake.connector, os
+from dotenv import load_dotenv
+load_dotenv()
+# paste and execute contents of data/snowflake_schema.sql
+"
+```
+
+**5. Start infrastructure**
+```bash
+cd docker
+docker compose up -d
+cd ..
+
+# Create Kafka topics (wait ~15 seconds for Kafka to start first)
+bash docker/kafka_topics.sh
+```
+
+---
+
+## Running the Pipeline
+
+Run these steps in order. Each step must complete before the next.
+
+### Step 1 — Download FAERS data
+```bash
+poetry run python app/scripts/download_faers.py --year 2023
+```
+Downloads all four 2023 quarterly FAERS ZIP files from the FDA portal into `data/faers/`.
+
+### Step 2 — Build RxNorm cache
+```bash
+poetry run python app/services/rxnorm_service.py
+```
+Calls NIH RxNorm API once per unique drug name and stores canonical names in Snowflake. Takes 30–60 minutes. Run once — safe to skip if cache is already built.
+
+### Step 3 — Publish FAERS to Kafka
+```bash
+poetry run python scripts/faers_prep.py
+```
+Reads all four FAERS ASCII files and publishes raw records to 4 Kafka topics. No logic — just publish.
+
+### Step 4 — Load PubMed abstracts into ChromaDB
+```bash
+poetry run python app/scripts/load_pubmed.py
+```
+Fetches up to 200 PubMed abstracts per golden drug, embeds them with `all-MiniLM-L6-v2`, and stores in ChromaDB. Takes 2–4 hours. Safe to interrupt and restart — already-loaded abstracts are skipped.
+
+### Step 5 — Run Spark Branch 1 (data engineering)
+```bash
+poetry run python pipelines/spark_branch1.py
+```
+Reads Kafka topics → caseversion dedup → PS filter → RxNorm normalize → 4-file join → writes `drug_reaction_pairs` to Snowflake (~5.7M rows).
+
+### Step 6 — Run Spark Branch 2 (PRR computation)
+```bash
+poetry run python pipelines/branch2_prr.py
+```
+Reads `drug_reaction_pairs` → computes PRR for all drug-reaction pairs → applies quality filters → writes `signals_flagged` to Snowflake (~7,000 signals). Includes gabapentin × cardio-respiratory arrest checkpoint.
+
+### Step 7 — Run agent pipeline (optional — for investigated signals)
+```bash
+poetry run python app/agents/pipeline.py
+```
+Runs Agent 1 → Agent 2 → Agent 3 for all 10 golden signal drugs. Writes SafetyBriefs to `safety_briefs` in Snowflake. Individual signals can also be investigated on-demand from the Signal Detail page.
+
+---
+
+## Running the Application
+
+**Terminal 1 — Start FastAPI backend**
+```bash
+poetry run uvicorn main:app --reload --port 8000
+```
+API docs available at: http://localhost:8000/docs
+
+**Terminal 2 — Start Streamlit frontend**
+```bash
+poetry run streamlit run streamlit_app/app.py --server.port 8501
+```
+Dashboard available at: http://localhost:8501
+
+**Kafka UI** (optional monitoring): http://localhost:8081
+
+---
+
+## Data Flow
+
+```
+FDA FAERS (quarterly ZIPs)
+    │
+    ▼
+faers_prep.py
+    │ publishes raw records
+    ▼
+Kafka (4 topics: demo, drug, reac, outc)
+    │
+    ▼
+Spark Branch 1
+    ├── Caseversion deduplication (keep highest per caseid)
+    ├── PS filter (role_cod = PS only — primary suspect drugs)
+    ├── RxNorm normalization (brand names → canonical names)
+    ├── Four-file join on primaryid
+    └── Pair-level deduplication
+    │
+    ▼ drug_reaction_pairs (~5.7M rows) → Snowflake
+    │
+    ▼
+Spark Branch 2
+    ├── PRR = (A/A+B) / (C/C+D) per drug-reaction pair
+    ├── Threshold filters: A≥50, C≥200, drug_total≥1000, PRR≥2.0
+    ├── Junk term filter (administrative MedDRA terms)
+    ├── Single-quarter spike filter (>70% in one quarter)
+    └── Late-surge filter (>85% in Q3+Q4)
+    │
+    ▼ signals_flagged (~7,000 signals) → Snowflake
+    │
+    ▼ [PRR validation checkpoint: gabapentin × cardio-respiratory arrest]
+    │
+    ▼
+LangGraph Agent Pipeline
+    ├── Agent 1: StatScore + GPT-4o → 3 PubMed search queries
+    ├── Agent 2: HNSW + BM25 + RRF → top-5 abstracts + LitScore
+    └── Agent 3: Priority tier + GPT-4o SafetyBrief + Pydantic validation
+    │
+    ▼ safety_briefs → Snowflake
+    │
+    ▼
+Streamlit HITL Queue
+    └── Analyst: Approve / Reject / Escalate → hitl_decisions → Snowflake
+```
+
+---
+
+## Agent Pipeline
+
+### Agent 1 — Signal Detector
+- Reads signal from `signals_flagged`
+- Calls GPT-4o to generate 3 domain-specific PubMed search queries
+- Fallback chain: GPT-4o → Claude Haiku → template queries
+- Guardrails: exactly 3 queries, ≥6 words each, all unique, drug name present
+
+### Agent 2 — Literature Retriever (no LLM)
+- HNSW dense retrieval via ChromaDB (`all-MiniLM-L6-v2`, cosine similarity ≥ 0.60)
+- BM25 sparse retrieval for exact keyword matching
+- Reciprocal Rank Fusion (RRF) combines 6 result sets (3 HNSW + 3 BM25)
+- Computes `LitScore = (relevance × 0.70) + (volume × 0.30)`
+
+### Agent 3 — Assessor
+- Assigns priority tier (P1–P4) based on StatScore and LitScore matrix
+- Calls GPT-4o to generate SafetyBrief with cited PMIDs
+- Pydantic v2 validation with 1 retry on failure
+- Citation guard: removes any PMID not in retrieved abstract set
+
+### Priority Matrix
+
+| | LitScore ≥ 0.5 | LitScore < 0.5 |
+|---|---|---|
+| StatScore ≥ 0.7 | P1 — Critical | P2 — Elevated |
+| StatScore < 0.7 | P3 — Moderate | P4 — Monitor |
 
 ---
 
 ## Evaluation
 
-### Primary — Detection Lag Study (Golden Set)
+MedSignal is evaluated against 10 golden drug-reaction pairs with documented 2023 FDA safety communications.
 
-```
-DLS = FDA_communication_date − MedSignal_first_flag_date  (days)
-Target: Average DLS > 90 days across 10 historical signals
-```
-
-| Drug | Signal | FDA Communication |
-|------|--------|-------------------|
-| Finasteride | Major Depressive Disorder | 2022 label update |
-| Rofecoxib (Vioxx) | Myocardial Infarction | Sep 2004 withdrawal |
-| Ondansetron (Zofran) | QT Prolongation | Sep 2011 |
-| Simvastatin | Myopathy / Rhabdomyolysis | Jun 2011 label update |
-| Metformin | Lactic Acidosis | Apr 2016 label update |
-| + 5 additional | TBD from FAERS literature | Various |
-
-### KPIs
-
-| KPI | Target |
-|-----|--------|
-| Average detection lag over FDA communication dates | > 90 days earlier |
-| Golden signals detected earlier (of 10) | ≥ 7 of 10 |
-| Signal detection precision | > 0.75 |
-| NER F1 on drug entity extraction | > 0.80 |
-| RAG Precision@5 | > 0.70 |
-| Mean agent pipeline latency | < 60 seconds |
-| Redis cache hit rate | > 40% |
-| Daily GPT-4o cost during demo week | < $5/day |
-
----
-
-## Getting Started
-
-### Prerequisites
-
-- Docker Desktop (16GB RAM recommended)
-- Python 3.10+
-- Node.js 18+
-- OpenAI API key
-
-### Quick Start
-
-```bash
-# Clone the repository
-git clone https://github.com/your-org/medsignal.git
-cd medsignal
-
-# Copy environment template
-cp .env.example .env
-# Add your OPENAI_API_KEY to .env
-
-# Start the full stack (Kafka, Spark, PostgreSQL, ChromaDB, Redis, Airflow)
-docker compose up -d
-
-# Verify all services are healthy
-docker compose ps
-
-# Load PubMed abstracts into ChromaDB (one-time, ~10 min on CPU)
-python scripts/load_pubmed.py
-
-# Replay FAERS historical data through Kafka
-python scripts/replay_faers.py --quarters 2023Q1 2023Q2 2023Q3 2023Q4
-
-# Access the dashboard
-open http://localhost:3000
-```
-
-### Environment Variables
-
-```env
-OPENAI_API_KEY=sk-...
-POSTGRES_URL=postgresql://medsignal:medsignal@localhost:5432/medsignal
-KAFKA_BOOTSTRAP_SERVERS=localhost:9092
-REDIS_URL=redis://localhost:6379
-CHROMADB_PATH=./chroma_store
-NCBI_API_KEY=...          # Optional — raises PubMed rate limit from 3 to 10 req/sec
-```
-
----
-
-## Project Structure
-
-```
-medsignal/
-├── pipeline/
-│   ├── kafka/            # FAERS + Reddit Kafka producers
-│   ├── spark/            # 7-file join, RxNorm, PRR/ROR computation
-│   └── airflow/          # FAERS batch DAG + PubMed embedding refresh DAG
-├── agents/
-│   ├── agent1_detector.py     # Signal Detector — statistical validation
-│   ├── agent2_retriever.py    # Literature Retriever — hybrid RAG
-│   ├── agent3_assessor.py     # Severity Assessor — SSS + SafetyBrief
-│   └── orchestrator.py        # LangGraph state machine
-├── retrieval/
-│   ├── chromadb_store.py      # HNSW dense retrieval
-│   ├── bm25_index.py          # Sparse keyword retrieval
-│   └── hybrid_search.py       # RRF fusion
-├── api/                  # FastAPI — 12 REST endpoints
-├── frontend/             # React + Tailwind dashboard
-├── scripts/              # Data loading and replay utilities
-└── tests/
-    ├── unit/             # PRR, SSS, Pydantic, RxNorm, citation validator
-    ├── integration/      # Pipeline, ChromaDB, agents, FastAPI, HITL
-    ├── e2e/              # Full stack demo flow + PRR checkpoint
-    └── eval/             # Golden set DLS, RAG Precision@5, NER F1
-```
-
----
-
-## Validation Checkpoint
-
-After Spark processes FAERS 2023 Q1–Q4, this query must return PRR ≈ 3.14:
+### Validation Queries
 
 ```sql
-SELECT drug_name, meddra_reaction, prr_score, case_count_a
-FROM   drug_symptom_pairs
-WHERE  drug_name = 'finasteride'
-AND    meddra_reaction ILIKE '%depress%'
-ORDER  BY prr_score DESC
-LIMIT  5;
--- Expected: prr_score ≈ 3.14, case_count_a ≈ 678
+-- 1. Junk term filter check (should return 0 rows)
+SELECT pt, COUNT(*) FROM signals_flagged
+WHERE pt IN ('drug ineffective','off label use','product use issue',
+             'no adverse event','drug interaction')
+GROUP BY pt;
+
+-- 2. All 10 golden signals present
+SELECT drug_key, pt, prr, drug_reaction_count
+FROM signals_flagged
+WHERE drug_key IN ('dupilumab','gabapentin','pregabalin','levetiracetam',
+                   'tirzepatide','semaglutide','empagliflozin',
+                   'dapagliflozin','metformin','bupropion')
+ORDER BY drug_key;
+
+-- 3. PRR benchmark (gabapentin checkpoint)
+SELECT drug_key, pt, prr, drug_reaction_count
+FROM signals_flagged
+WHERE drug_key = 'gabapentin' AND pt = 'cardio-respiratory arrest';
+
+-- 4. Input completeness
+SELECT COUNT(*) FROM drug_reaction_pairs;
+-- Expected: 5,755,720
 ```
 
-This is the most important validation in the project. It confirms the 7-file join, RxNorm normalisation, and PRR computation are all correct. No agent pipeline work begins until this passes.
+### SafetyBrief Quality Rubric
+
+Run the rubric scorer to evaluate all 10 golden SafetyBriefs:
+```bash
+poetry run python evaluation/rubric_scorer.py
+```
+
+Four criteria (pass/fail per brief):
+1. Signal identification — brief names drug and reaction correctly
+2. Literature grounding — every claim traceable to a retrieved abstract
+3. Citation accuracy — all PMIDs in brief_text appear in pmids_cited
+4. Tier consistency — recommended action consistent with priority tier
+
+Target: ≥ 7/10 briefs pass all four criteria.
 
 ---
 
-## Team
+## Testing
 
-| Member | Role |
-|--------|------|
-| Samiksha Rajesh Gupta | Data Engineering Lead — Kafka, Spark, FAERS pipeline, Airflow |
-| Prachi Ganpatrao Pradhan | LLM / Agent Engineer — LangGraph, RAG, SSS, FastAPI signals endpoints |
-| Siddharth Rakesh Shukla | Backend, Frontend & QA Lead — Docker, Redis, HITL service, React |
+```bash
+# Unit tests (no external dependencies)
+poetry run pytest tests/unit/ -v -m unit
 
----
+# Integration tests (requires Snowflake + ChromaDB)
+poetry run pytest tests/integration/ -v -m integration
 
-## Cost
+# Property-based tests
+poetry run pytest tests/hypothesis/ -v
 
-| Item | Estimated Cost |
-|------|---------------|
-| OpenAI embeddings (28K abstracts, one-time) | ~$0.20 |
-| GPT-4o development (GPT-4o-mini during dev) | ~$5.00 |
-| GPT-4o demo week (500 signals × 3 agents) | ~$15–25 |
-| **Total budget** | **< $50** |
+# Smoke tests
+poetry run pytest tests/test_smoke.py -v
 
-Hard limit set in OpenAI dashboard on Day 1. All agent responses cached in Redis (24-hour TTL) to reduce repeat API calls. Token usage and cost tracked per agent in real time via the System Health dashboard.
+# All tests
+poetry run pytest -v
+```
 
 ---
 
-## Limitations
+## API Reference
 
-- FAERS data is released quarterly — MedSignal replays historical records through Kafka to simulate streaming. This is explicitly a simulation, not true real-time ingestion.
-- PRR statistical significance is not causation. MedSignal is a detection and triage tool — it accelerates human review, it does not replace it.
-- The HITL gate exists because LLM-generated safety briefs require clinical judgment before publication.
-- Non-English adverse event reports are out of scope.
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/signals` | List flagged signals (paginated, filterable) |
+| GET | `/signals/count` | Total signal count + per-tier breakdown |
+| GET | `/signals/{drug}/{pt}/brief` | Full SafetyBrief for one signal |
+| POST | `/signals/{drug}/{pt}/investigate` | Trigger on-demand agent pipeline |
+| GET | `/hitl/queue` | Signals pending human review |
+| POST | `/hitl/decisions` | Submit approve/reject/escalate decision |
+| GET | `/evaluation/summary` | Precision + lead time header metrics |
+| GET | `/evaluation/lead-times` | Per-signal detection lead times |
+| GET | `/evaluation/precision-recall` | Precision table for 10 golden signals |
+| GET | `/health` | Snowflake connectivity check |
+| GET | `/metrics` | System metrics (JSON) |
+| GET | `/prometheus` | Prometheus exposition format |
+
+---
+
+## Streamlit Pages
+
+| Page | Description |
+|------|-------------|
+| Signal Feed | 7,197 flagged signals ranked by priority tier with PRR, StatScore, LitScore, and outcome flags. Paginated (10 per load). |
+| Signal Detail | Full SafetyBrief with cited PMIDs, score breakdowns, and on-demand investigation trigger. |
+| HITL Queue | Human review queue sorted P1 → P4. Approve, reject, or escalate with optional reviewer note. Every decision logged immutably. |
+| Evaluation Dashboard | Detection lead time bar chart and precision table for 10 golden signals. Precision: 100% (9/9 validated signals). |
+| Metrics | Prometheus observability — agent latency, token costs, HITL queue depth, signal counts. |
+| Evidence Explorer | Browse PubMed abstracts in ChromaDB by drug name with similarity scores. |
+
+---
+
+## Guardrails
+
+Guardrails are applied at three points:
+
+**Input** — Statistical threshold gate (PRR ≥ 2.0, A ≥ 50, C ≥ 200) + PRR validation checkpoint + three quality filters ensure the LLM never receives a statistically weak or artefact-driven signal.
+
+**Output** — Pydantic v2 schema enforcement on SafetyBrief structure. Citation guard removes any fabricated PMID. Hallucination checker validates numerical claims against source data.
+
+**Human** — Every investigated signal requires human approval. No automated approval path exists. Decisions are immutable — INSERT only, never UPDATE.
 
 ---
 
 ## References
 
-1. FDA Adverse Event Reporting System (FAERS) — https://www.fda.gov/drugs/surveillance/questions-and-answers-fdas-adverse-event-reporting-system-faers
-2. Evans S.J.W. et al. (2001). Use of proportional reporting ratios (PRRs) for signal generation from spontaneous adverse drug reaction reports. *Pharmacoepidemiology and Drug Safety*, 10(6), 483–486.
-3. LangGraph Documentation — https://langchain-ai.github.io/langgraph/
-4. ChromaDB Documentation — https://docs.trychroma.com/
-5. Cormack G.V. et al. (2009). Reciprocal rank fusion outperforms Condorcet and individual rank learning methods. *SIGIR '09*.
-6. NCBI E-utilities API — https://www.ncbi.nlm.nih.gov/books/NBK25497/
+- U.S. Food and Drug Administration. (2023). FDA Adverse Event Reporting System (FAERS). https://fis.fda.gov/extensions/FPD-QDE-FAERS/FPD-QDE-FAERS.html
+- National Library of Medicine. (2023). PubMed / NCBI Entrez API. https://www.ncbi.nlm.nih.gov/home/develop/api/
+- Evans, S.J.W., Waller, P.C., & Davis, S. (2001). Use of proportional reporting ratios (PRRs) for signal generation from spontaneous adverse drug reaction reports. *Pharmacoepidemiology and Drug Safety*, 10(6), 483–486.
+- National Library of Medicine. (2023). RxNorm API. https://rxnav.nlm.nih.gov/
