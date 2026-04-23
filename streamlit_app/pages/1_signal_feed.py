@@ -207,6 +207,18 @@ html, body, .stApp {
 .ms-priority.p3{color:var(--p3);background:var(--p3-dim);border-color:var(--p3-border)}
 .ms-priority.p4{color:var(--p4);background:var(--p4-dim);border-color:var(--p4-border)}
 .ms-priority.uninvestigated{color:var(--uninvestigated);background:var(--uninvestigated-dim);border-color:rgba(167,139,250,0.30)}
+.ms-decision-badge {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    padding: 6px 14px;
+    border-radius: 6px;
+    border: 1px solid;
+}
+.ms-decision-badge.approve { color:#4ADE80; background:rgba(34,197,94,0.10); border-color:rgba(34,197,94,0.40); }
+.ms-decision-badge.reject  { color:#F87171; background:rgba(247,42,42,0.10); border-color:rgba(247,42,42,0.40); }
 
 /* Metrics row */
 .ms-metrics {
@@ -681,6 +693,13 @@ for signal in signals:
     lt         = int(signal.get("lt_count")    or 0)
     computed   = signal.get("computed_at")
 
+    hitl_decision = signal.get("hitl_decision")
+    _decision_labels = {"APPROVE": "Approved", "REJECT": "Rejected"}
+    decision_badge_html = (
+        f'<div class="ms-decision-badge {hitl_decision.lower()}">{_decision_labels.get(hitl_decision.upper(), hitl_decision)}</div>'
+        if hitl_decision else ""
+    )
+
     pclass = pc(priority)
     sc     = sbar_color(stat_score, "stat")
     lc     = sbar_color(lit_score,  "lit")
@@ -700,7 +719,7 @@ for signal in signals:
             <div class="ms-pt">{pt_val}</div>
         </div>
         <div class="ms-card-badges">
-            <div class="ms-priority {pclass}">{priority_label}</div>
+            <div class="ms-priority {pclass}">{priority_label}</div>{decision_badge_html}
         </div>
     </div>
     <div class="ms-metrics">
