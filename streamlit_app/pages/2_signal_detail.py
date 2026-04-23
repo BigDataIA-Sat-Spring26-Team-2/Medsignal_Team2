@@ -434,7 +434,7 @@ section[data-testid="stMain"] > div {
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def fetch_signals(limit: int = 200, offset: int = 0, search: str = "") -> list:
+def fetch_signals(limit: int = 500, offset: int = 0, search: str = "") -> list:
     """
     Fetch signals from API with pagination and search support.
 
@@ -547,7 +547,7 @@ render_topbar("Signal Detail")
 if "signal_offset" not in st.session_state:
     st.session_state.signal_offset = 0
 if "signal_batch_size" not in st.session_state:
-    st.session_state.signal_batch_size = 200
+    st.session_state.signal_batch_size = 500
 if "all_signals" not in st.session_state:
     st.session_state.all_signals = []
 if "search_query" not in st.session_state:
