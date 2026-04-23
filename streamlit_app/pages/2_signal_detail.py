@@ -617,8 +617,18 @@ investigated = sorted(
     [s for s in signals if s.get("priority") is not None],
     key=lambda s: (tier_order.get((s.get("priority") or "").upper(), 4), -(s.get("stat_score") or 0)),
 )
+
+# Build set of investigated signal keys to prevent duplicates
+investigated_keys = {(s["drug_key"], s["pt"]) for s in investigated}
+
+# Also exclude the pending just-investigated signal (failsafe for cache timing issues)
+pending_drug = st.session_state.get("pending_select_drug")
+pending_pt = st.session_state.get("pending_select_pt")
+if pending_drug and pending_pt:
+    investigated_keys.add((pending_drug, pending_pt))
+
 uninvestigated = sorted(
-    [s for s in signals if s.get("priority") is None],
+    [s for s in signals if s.get("priority") is None and (s["drug_key"], s["pt"]) not in investigated_keys],
     key=lambda s: -(s.get("prr") or 0),
 )
 
@@ -632,8 +642,12 @@ default_inv_idx = 0
 pending_drug = st.session_state.pop("pending_select_drug", None)
 pending_pt   = st.session_state.pop("pending_select_pt", None)
 if pending_drug and pending_pt:
+    # Case-insensitive, whitespace-normalized matching
+    pending_drug_norm = pending_drug.strip().lower()
+    pending_pt_norm = pending_pt.strip().lower()
     for i, s in enumerate(investigated):
-        if s["drug_key"] == pending_drug and s["pt"] == pending_pt:
+        if (s["drug_key"].strip().lower() == pending_drug_norm and
+            s["pt"].strip().lower() == pending_pt_norm):
             default_inv_idx = i
             break
 
@@ -898,13 +912,25 @@ if not is_investigated:
                 ok = trigger_investigate(drug_key, pt_val)
             if ok:
                 st.markdown(
-                    '<div class="ms-success">✓ SafetyBrief generated. Reloading...</div>',
+                    '<div class="ms-success">✓ SafetyBrief generated. Waiting for database sync...</div>',
                     unsafe_allow_html=True,
                 )
+                # Force fresh data fetch
                 st.cache_data.clear()
+                st.session_state.signal_offset = 0
+                st.session_state.all_signals = []
+                st.session_state.has_more_signals = True
                 st.session_state.active_panel = "investigated"
                 st.session_state.pending_select_drug = drug_key
                 st.session_state.pending_select_pt   = pt_val
+                # Clear selectbox widget keys so default_inv_idx takes effect
+                if "inv_select" in st.session_state:
+                    del st.session_state["inv_select"]
+                if "uninv_select" in st.session_state:
+                    del st.session_state["uninv_select"]
+                # Longer delay to ensure Snowflake commits + cache invalidates
+                import time
+                time.sleep(2.0)
                 st.rerun()
             else:
                 st.markdown(
@@ -1060,6 +1086,12 @@ with right_col:
         if ok:
             st.markdown('<div class="ms-success">✓ Brief updated. Reloading...</div>', unsafe_allow_html=True)
             st.cache_data.clear()
+            # Stay on same signal after re-investigation
+            st.session_state.pending_select_drug = drug_key
+            st.session_state.pending_select_pt   = pt_val
+            # Clear selectbox keys to force refresh
+            if "inv_select" in st.session_state:
+                del st.session_state["inv_select"]
             st.rerun()
         else:
             st.markdown('<div class="ms-error">Pipeline failed — check FastAPI logs.</div>', unsafe_allow_html=True)
