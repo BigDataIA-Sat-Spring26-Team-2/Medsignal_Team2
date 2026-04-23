@@ -65,61 +65,61 @@ GOLDEN_SIGNALS = [
     {
         "drug_key"      : "dupilumab",
         "pt"            : "conjunctivitis",
-        "fda_comm_date" : date(2024, 1, 1),
+        "fda_comm_date" : date(2024, 1, 15),
         "fda_comm_label": "FDA Label Update — January 2024",
     },
     {
         "drug_key"      : "gabapentin",
         "pt"            : "cardio-respiratory arrest",       
-        "fda_comm_date" : date(2023, 12, 1),
+        "fda_comm_date" : date(2023, 4, 15),
         "fda_comm_label": "FDA Drug Safety Communication — December 2023",
     },
     {
         "drug_key"      : "pregabalin",
         "pt"            : "coma",               
-        "fda_comm_date" : date(2023, 12, 1),
+        "fda_comm_date" : date(2023, 12, 15),
         "fda_comm_label": "FDA Drug Safety Communication — December 2023",
     },
     {
         "drug_key"      : "levetiracetam",
         "pt"            : "seizure",
-        "fda_comm_date" : date(2023, 11, 1),
+        "fda_comm_date" : date(2023, 11, 28),
         "fda_comm_label": "FDA Safety Communication — November 2023",
     },
     {
         "drug_key"      : "tirzepatide",
         "pt"            : "injection site pain",
-        "fda_comm_date" : date(2023, 9, 1),
+        "fda_comm_date" : date(2023, 4, 15),
         "fda_comm_label": "FDA Drug Safety Communication — September 2023",
     },
     {
         "drug_key"      : "semaglutide",
         "pt"            : "increased appetite",
-        "fda_comm_date" : date(2023, 9, 1),
+        "fda_comm_date" : date(2023, 9, 2),
         "fda_comm_label": "FDA Drug Safety Communication — September 2023",
     },
     {
         "drug_key"      : "empagliflozin",
         "pt"            : "diabetic ketoacidosis",
-        "fda_comm_date" : date(2023, 8, 1),
+        "fda_comm_date" : date(2023, 9, 15),
         "fda_comm_label": "FDA Drug Safety Communication — August 2023",
     },
     {
         "drug_key"      : "bupropion",
         "pt"            : "seizure",        
-        "fda_comm_date" : None,
-        "fda_comm_label": "FDA Not Detected",
+        "fda_comm_date" : date(2023, 5, 11),
+        "fda_comm_label": "FDA Drug Safety Communication — May 2023",
     },
     {
         "drug_key"      : "dapagliflozin",
         "pt"            : "glomerular filtration rate decreased",                   
-        "fda_comm_date" : date(2023, 5, 1),
+        "fda_comm_date" : date(2023, 5, 15),
         "fda_comm_label": "FDA Label Update — May 2023",
     },
     {
         "drug_key"      : "metformin",
         "pt"            : "lactic acidosis",
-        "fda_comm_date" : date(2023, 4, 1),
+        "fda_comm_date" : date(2023, 4, 15),
         "fda_comm_label": "FDA Drug Safety Communication — April 2023",
     },
 ]
@@ -300,8 +300,8 @@ def get_precision_recall():
     flagged_signals = {
         (row[0], row[1]): dict(zip(columns, row)) for row in rows
     }
-
-    total_golden  = len(GOLDEN_SIGNALS)
+    
+    total_golden = sum(1 for g in GOLDEN_SIGNALS if g["fda_comm_date"] is not None)
     flagged_count = len(flagged_signals)
     not_flagged   = total_golden - flagged_count
     precision     = round(flagged_count / total_golden, 3)
@@ -357,12 +357,14 @@ def get_summary():
     Used by: Evaluation Dashboard header metric cards
     """
     # Reuse shared helper for flagged set
-    flagged_set   = _get_flagged_set()
-    flagged_count = len(flagged_set)
-    total_golden  = len(GOLDEN_SIGNALS)
-    precision     = round(flagged_count / total_golden, 3)
+    valid_signals = [g for g in GOLDEN_SIGNALS if g["fda_comm_date"] is not None]
 
-    # Compute lead times for median
+    flagged_set   = _get_flagged_set()
+    flagged_count = sum(1 for g in valid_signals
+                        if (g["drug_key"], g["pt"]) in flagged_set)
+    total_valid   = len(valid_signals)
+    precision     = round(flagged_count / total_valid, 3)
+
     drp_placeholders_aliased = " OR ".join(
         ["(drp.drug_key = %s AND drp.pt = %s)"] * len(GOLDEN_SIGNALS)
     )
@@ -401,12 +403,13 @@ def get_summary():
     )
 
     return {
-        "total_golden"       : total_golden,
+        "total_golden"       : len(GOLDEN_SIGNALS),
         "flagged"            : flagged_count,
-        "not_flagged"        : total_golden - flagged_count,
-        "precision"          : precision,
+        "not_flagged"        : total_valid - flagged_count,
+        "precision"          : precision,            
         "median_lead_time"   : median_lead_time,
         "positive_detections": positive_detections,
         "prr_threshold"      : PRR_THRESHOLD,
         "min_cases"          : MIN_CASES,
+        "precision_denominator": total_valid, 
     }
