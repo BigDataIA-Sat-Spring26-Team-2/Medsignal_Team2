@@ -5,15 +5,16 @@ Reads drug_reaction_pairs from Snowflake (written by spark_branch1.py),
 computes Proportional Reporting Ratio across all drug-reaction pairs,
 applies quality filters, and writes flagged signals back to Snowflake.
 
-
+Uses PySpark for distributed computation to match proposal architecture.
 """
 
 import os
 import math
 import logging
-import pandas as pd
-import snowflake.connector
 from dotenv import load_dotenv
+from pyspark.sql import SparkSession, DataFrame
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -61,13 +62,9 @@ SPIKE_MAX_PCT  = 0.70        # single-quarter concentration limit
 SURGE_LATE_PCT = 0.85        # Q3+Q4 concentration limit
 
 
-# ── Snowflake connection ──────────────────────────────────────────────────────
+# ── Snowflake configuration ───────────────────────────────────────────────────
 
 def get_sf_config() -> dict:
-    """
-    Returns a dict of Snowflake connection parameters.
-    Identical to the sf_config pattern in spark_branch1.py.
-    """
     return {
         "account"  : os.getenv("SNOWFLAKE_ACCOUNT"),
         "user"     : os.getenv("SNOWFLAKE_USER"),
@@ -78,8 +75,16 @@ def get_sf_config() -> dict:
     }
 
 
-def get_conn() -> snowflake.connector.SnowflakeConnection:
-    return snowflake.connector.connect(**get_sf_config())
+def get_sf_options() -> dict:
+    cfg = get_sf_config()
+    return {
+        "sfURL"      : f"{cfg['account']}.snowflakecomputing.com",
+        "sfUser"     : cfg["user"],
+        "sfPassword" : cfg["password"],
+        "sfDatabase" : cfg["database"],
+        "sfSchema"   : cfg["schema"],
+        "sfWarehouse": cfg["warehouse"],
+    }
 
 
 # ── Scoring ───────────────────────────────────────────────────────────────────
@@ -101,188 +106,292 @@ def compute_stat_score(prr: float, case_count: int,
 
 # ── Pipeline steps ────────────────────────────────────────────────────────────
 
-def load_pairs() -> pd.DataFrame:
+def load_pairs(spark: SparkSession) -> DataFrame:
     """
-    Reads drug_reaction_pairs from Snowflake into a pandas DataFrame.
-    Uses snowflake.connector directly — same pattern as load_rxnorm_cache()
-    in spark_branch1.py. Avoids SQLAlchemy URL-string issues with special
-    characters in the Snowflake password.
+    Load data using snowflake-connector-python, then convert to Spark DataFrame.
+    Bypasses Snowflake Spark connector classpath issues.
     """
     log.info("Loading drug_reaction_pairs from Snowflake...")
-    conn = get_conn()
-    cur  = conn.cursor()
+
+    import snowflake.connector
+    from pyspark.sql.types import StructType, StructField, StringType, IntegerType
+
+    cfg = get_sf_config()
+    conn = snowflake.connector.connect(**cfg)
+    cur = conn.cursor()
+
     cur.execute("""
         SELECT primaryid, drug_key, pt,
                death_flag, hosp_flag, lt_flag, source_quarter
-        FROM   drug_reaction_pairs
+        FROM drug_reaction_pairs
     """)
-    rows    = cur.fetchall()
+
+    rows = cur.fetchall()
     columns = [desc[0].lower() for desc in cur.description]
+
     cur.close()
     conn.close()
 
-    df = pd.DataFrame(rows, columns=columns)
-    log.info("Loaded %d rows from drug_reaction_pairs", len(df))
+    log.info("Fetched %d rows from Snowflake", len(rows))
+
+    schema = StructType([
+        StructField("primaryid", StringType(), True),
+        StructField("drug_key", StringType(), True),
+        StructField("pt", StringType(), True),
+        StructField("death_flag", IntegerType(), True),
+        StructField("hosp_flag", IntegerType(), True),
+        StructField("lt_flag", IntegerType(), True),
+        StructField("source_quarter", StringType(), True),
+    ])
+
+    df = spark.createDataFrame(rows, schema)
+    log.info("Converted to Spark DataFrame with %d rows", df.count())
+
     return df
 
 
-def compute_prr(pairs: pd.DataFrame) -> pd.DataFrame:
-    total_cases = pairs["primaryid"].nunique()
+def compute_prr(pairs: DataFrame) -> DataFrame:
+    """
+    Computes PRR for all drug-reaction pairs.
 
-    a_df = pairs.groupby(["drug_key", "pt"]).agg(
-        A          =("primaryid", "count"),
-        death_count=("death_flag", "sum"),
-        hosp_count =("hosp_flag",  "sum"),
-        lt_count   =("lt_flag",    "sum"),
-    ).reset_index()
+    PRR = (A / (A + B)) / (C / (C + D))
 
-    drug_totals     = (pairs.groupby("drug_key")["primaryid"]
-                       .count().rename("drug_total").reset_index())
-    reaction_totals = (pairs.groupby("pt")["primaryid"]
-                       .count().rename("reaction_total").reset_index())
+    Where:
+        A = cases with drug X AND reaction Y
+        B = cases with drug X WITHOUT reaction Y
+        C = cases with OTHER drugs AND reaction Y
+        D = cases with OTHER drugs WITHOUT reaction Y
+    """
+    total_cases = pairs.select("primaryid").distinct().count()
 
-    df = a_df.merge(drug_totals, on="drug_key").merge(reaction_totals, on="pt")
-    df["B"] = df["drug_total"]     - df["A"]
-    df["C"] = df["reaction_total"] - df["A"]
-    df["D"] = total_cases - df["drug_total"] - df["reaction_total"] + df["A"]
-
-    valid = (df["C"] > 0) & ((df["C"] + df["D"]) > 0) & ((df["A"] + df["B"]) > 0)
-    df.loc[valid, "PRR"] = (
-        (df.loc[valid, "A"] / (df.loc[valid, "A"] + df.loc[valid, "B"])) /
-        (df.loc[valid, "C"] / (df.loc[valid, "C"] + df.loc[valid, "D"]))
+    a_df = (
+        pairs
+        .groupBy("drug_key", "pt")
+        .agg(
+            F.countDistinct("primaryid").alias("A"),
+            F.sum("death_flag").cast("int").alias("death_count"),
+            F.sum("hosp_flag").cast("int").alias("hosp_count"),
+            F.sum("lt_flag").cast("int").alias("lt_count"),
+        )
     )
-    return df.dropna(subset=["PRR"])
+
+    drug_totals = (
+        pairs
+        .groupBy("drug_key")
+        .agg(F.countDistinct("primaryid").alias("drug_total"))
+    )
+
+    reaction_totals = (
+        pairs
+        .groupBy("pt")
+        .agg(F.countDistinct("primaryid").alias("reaction_total"))
+    )
+
+    df = (
+        a_df
+        .join(drug_totals, on="drug_key", how="inner")
+        .join(reaction_totals, on="pt", how="inner")
+    )
+
+    df = df.withColumn("B", F.col("drug_total") - F.col("A"))
+    df = df.withColumn("C", F.col("reaction_total") - F.col("A"))
+    df = df.withColumn("D", F.lit(total_cases) - F.col("drug_total") - F.col("reaction_total") + F.col("A"))
+
+    df = df.withColumn(
+        "PRR",
+        F.when(
+            (F.col("C") > 0) &
+            ((F.col("C") + F.col("D")) > 0) &
+            ((F.col("A") + F.col("B")) > 0),
+            (F.col("A") / (F.col("A") + F.col("B"))) /
+            (F.col("C") / (F.col("C") + F.col("D")))
+        ).otherwise(None)
+    )
+
+    return df.filter(F.col("PRR").isNotNull())
 
 
-def apply_threshold_filters(df: pd.DataFrame, min_a: int,
-                            min_c: int, min_drug: int) -> pd.DataFrame:
-    return df[
-        (df["A"]          >= min_a)    &
-        (df["C"]          >= min_c)    &
-        (df["drug_total"] >= min_drug) &
-        (df["PRR"]        >= PRR_THRESHOLD) &
-        (~df["pt"].isin(JUNK_TERMS))
-    ].copy()
+def apply_threshold_filters(df: DataFrame, min_a: int,
+                            min_c: int, min_drug: int) -> DataFrame:
+    return df.filter(
+        (F.col("A") >= min_a) &
+        (F.col("C") >= min_c) &
+        (F.col("drug_total") >= min_drug) &
+        (F.col("PRR") >= PRR_THRESHOLD) &
+        (~F.col("pt").isin(list(JUNK_TERMS)))
+    )
 
 
-def apply_spike_filter(signals: pd.DataFrame,
-                       pairs: pd.DataFrame) -> pd.DataFrame:
-    if pairs["source_quarter"].nunique() <= 1:
+def apply_spike_filter(signals: DataFrame, pairs: DataFrame) -> DataFrame:
+    num_quarters = pairs.select("source_quarter").distinct().count()
+
+    if num_quarters <= 1:
         log.info("Single quarter detected — skipping spike filter")
         return signals
 
-    qcounts = (pairs.groupby(["drug_key", "pt", "source_quarter"])
-               .size().rename("qcount").reset_index())
-    qtotals = (qcounts.groupby(["drug_key", "pt"])
-               .agg(max_q=("qcount", "max"), total_q=("qcount", "sum"))
-               .reset_index())
-    qtotals["spike_pct"] = qtotals["max_q"] / qtotals["total_q"]
-    clean  = qtotals[qtotals["spike_pct"] <= SPIKE_MAX_PCT][["drug_key", "pt"]]
-    result = signals.merge(clean, on=["drug_key", "pt"], how="inner")
-    log.info("After spike filter: %d", len(result))
+    qcounts = (
+        pairs
+        .groupBy("drug_key", "pt", "source_quarter")
+        .agg(F.count("*").alias("qcount"))
+    )
+
+    qtotals = (
+        qcounts
+        .groupBy("drug_key", "pt")
+        .agg(
+            F.max("qcount").alias("max_q"),
+            F.sum("qcount").alias("total_q")
+        )
+        .withColumn("spike_pct", F.col("max_q") / F.col("total_q"))
+    )
+
+    clean = qtotals.filter(F.col("spike_pct") <= SPIKE_MAX_PCT).select("drug_key", "pt")
+
+    result = signals.join(clean, on=["drug_key", "pt"], how="inner")
+    result_count = result.count()
+    log.info("After spike filter: %d", result_count)
     return result
 
 
-def apply_surge_filter(signals: pd.DataFrame,
-                       pairs: pd.DataFrame) -> pd.DataFrame:
-    if not pairs["source_quarter"].isin(LATE_QUARTERS).any():
+def apply_surge_filter(signals: DataFrame, pairs: DataFrame) -> DataFrame:
+    has_late_quarters = pairs.filter(F.col("source_quarter").isin(list(LATE_QUARTERS))).count() > 0
+
+    if not has_late_quarters:
         log.info("No Q3/Q4 data — skipping late-surge filter")
         return signals
 
-    surge = pairs.copy()
-    surge["is_late"] = surge["source_quarter"].isin(LATE_QUARTERS).astype(int)
-    late = (surge.groupby(["drug_key", "pt"])
-            .agg(late_n=("is_late", "sum"), total_n=("primaryid", "count"))
-            .reset_index())
-    late["late_pct"] = late["late_n"] / late["total_n"]
-    non_surge = late[late["late_pct"] <= SURGE_LATE_PCT][["drug_key", "pt"]]
-    result    = signals.merge(non_surge, on=["drug_key", "pt"], how="inner")
-    log.info("After late-surge filter: %d", len(result))
+    surge = pairs.withColumn("is_late", F.when(F.col("source_quarter").isin(list(LATE_QUARTERS)), 1).otherwise(0))
+
+    late = (
+        surge
+        .groupBy("drug_key", "pt")
+        .agg(
+            F.sum("is_late").alias("late_n"),
+            F.count("primaryid").alias("total_n")
+        )
+        .withColumn("late_pct", F.col("late_n") / F.col("total_n"))
+    )
+
+    non_surge = late.filter(F.col("late_pct") <= SURGE_LATE_PCT).select("drug_key", "pt")
+
+    result = signals.join(non_surge, on=["drug_key", "pt"], how="inner")
+    result_count = result.count()
+    log.info("After late-surge filter: %d", result_count)
     return result
 
 
-def run_checkpoint(signals: pd.DataFrame) -> bool:
+def run_checkpoint(signals: DataFrame) -> bool:
     """
     Matches the Branch 1 validation checkpoint: gabapentin × cardio-respiratory arrest.
     This is a well-documented golden signal with A > 30 even in a single quarter.
     If this pair is absent the PRR computation or threshold filters are broken.
     Do not run write_signals() until this passes.
     """
-    chk = signals[
-        signals["drug_key"].str.contains("gabapentin", case=False) &
-        signals["pt"].str.contains("cardio-respiratory arrest", case=False)
-    ]
-    if chk.empty:
+    chk = signals.filter(
+        F.lower(F.col("drug_key")).contains("gabapentin") &
+        F.lower(F.col("pt")).contains("cardio-respiratory arrest")
+    )
+
+    if chk.count() == 0:
         log.warning(
             "CHECKPOINT FAILED: gabapentin × cardio-respiratory arrest not in signals. "
             "Check join correctness, PS filter, and threshold values before proceeding."
         )
         return False
-    row = chk.iloc[0]
+
+    row = chk.first()
     log.info("CHECKPOINT PASSED — gabapentin × cardio-respiratory arrest | PRR=%.2f  A=%d",
              row["PRR"], row["A"])
     return True
 
 
-def write_signals(signals: pd.DataFrame) -> None:
+def write_signals(signals: DataFrame, spark: SparkSession) -> None:
     """
-    Writes flagged signals to the Snowflake signals_flagged table.
+    Write signals to Snowflake using Python connector.
+    Spark used for computation, Python connector for I/O to avoid classpath issues.
+    """
+    from pyspark.sql.types import FloatType
+    import snowflake.connector
 
-    Uses TRUNCATE + executemany via snowflake.connector.
-    Snowflake uses %s placeholders (DB-API 2.0), same as psycopg2.
-    TRUNCATE in Snowflake does not require CASCADE.
-    """
-    signals = signals.assign(
-        stat_score=signals.apply(
-            lambda r: compute_stat_score(
-                r["PRR"], int(r["A"]),
-                int(r["death_count"]), int(r["lt_count"]), int(r["hosp_count"])
-            ), axis=1
+    stat_score_udf = F.udf(compute_stat_score, FloatType())
+
+    signals = signals.withColumn(
+        "stat_score",
+        stat_score_udf(
+            F.col("PRR"),
+            F.col("A").cast("int"),
+            F.col("death_count").cast("int"),
+            F.col("lt_count").cast("int"),
+            F.col("hosp_count").cast("int")
         )
     )
 
-    records = signals.rename(columns={
-        "PRR": "prr",
-        "A":   "drug_reaction_count",
-        "B":   "drug_no_reaction_count",
-        "C":   "other_reaction_count",
-        "D":   "other_no_reaction_count",
-    })[[
-        "drug_key", "pt", "prr",
-        "drug_reaction_count", "drug_no_reaction_count",
-        "other_reaction_count", "other_no_reaction_count",
-        "death_count", "hosp_count", "lt_count",
-        "drug_total", "stat_score",
-    ]].to_dict("records")
+    output = signals.select(
+        F.col("drug_key"),
+        F.col("pt"),
+        F.col("PRR").alias("prr"),
+        F.col("A").alias("drug_reaction_count"),
+        F.col("B").alias("drug_no_reaction_count"),
+        F.col("C").alias("other_reaction_count"),
+        F.col("D").alias("other_no_reaction_count"),
+        F.col("death_count"),
+        F.col("hosp_count"),
+        F.col("lt_count"),
+        F.col("drug_total"),
+        F.col("stat_score"),
+    )
 
-    conn = get_conn()
-    cur  = conn.cursor()
+    count = output.count()
+    log.info("Collected %d signals from Spark — writing to Snowflake", count)
+
+    records = output.collect()
+    rows = [row.asDict() for row in records]
+
+    cfg = get_sf_config()
+    conn = snowflake.connector.connect(**cfg)
+    cur = conn.cursor()
 
     cur.execute("TRUNCATE TABLE signals_flagged")
 
-    cur.executemany(
-        """
+    insert_sql = """
         INSERT INTO signals_flagged (
-            drug_key, pt, prr,
-            drug_reaction_count, drug_no_reaction_count,
+            drug_key, pt, prr, drug_reaction_count, drug_no_reaction_count,
             other_reaction_count, other_no_reaction_count,
-            death_count, hosp_count, lt_count,
-            drug_total, stat_score
+            death_count, hosp_count, lt_count, drug_total, stat_score
         ) VALUES (
-            %(drug_key)s, %(pt)s, %(prr)s,
-            %(drug_reaction_count)s, %(drug_no_reaction_count)s,
+            %(drug_key)s, %(pt)s, %(prr)s, %(drug_reaction_count)s, %(drug_no_reaction_count)s,
             %(other_reaction_count)s, %(other_no_reaction_count)s,
-            %(death_count)s, %(hosp_count)s, %(lt_count)s,
-            %(drug_total)s, %(stat_score)s
+            %(death_count)s, %(hosp_count)s, %(lt_count)s, %(drug_total)s, %(stat_score)s
         )
-        """,
-        records,
-    )
+    """
 
+    cur.executemany(insert_sql, rows)
     conn.commit()
     cur.close()
     conn.close()
-    log.info("Written %d signals to signals_flagged (Snowflake)", len(records))
+
+    log.info("Written %d signals to signals_flagged (Snowflake)", count)
+
+
+def create_spark_session() -> SparkSession:
+    """Use Branch 1's exact Spark build pattern for maximum compatibility."""
+    # Set up Hadoop home for Windows
+    hadoop_home = os.getenv("HADOOP_HOME")
+    if hadoop_home:
+        os.environ["HADOOP_HOME"] = hadoop_home
+        os.environ["PATH"] = os.environ["PATH"] + f";{hadoop_home}\\bin"
+
+    # Reuse Branch 1's build_spark function
+    from pipelines.spark_branch1 import build_spark, ensure_snowflake_jdbc_jar
+
+    jar_path = ensure_snowflake_jdbc_jar()
+    spark = build_spark(jar_path)
+
+    # Override app name for Branch 2
+    spark.sparkContext.setLogLevel("WARN")
+    log.info("Spark session created using Branch 1's build pattern")
+
+    return spark
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -295,42 +404,53 @@ if __name__ == "__main__":
         log.error("Missing Snowflake env vars: %s", missing)
         raise SystemExit(1)
 
-    pairs      = load_pairs()
-    total_rows = len(pairs)
-    log.info("Rows: %d | Cases: %d", total_rows, pairs["primaryid"].nunique())
+    spark = create_spark_session()
 
-    min_a, min_c, min_drug = (
-        (30, 100, 500) if total_rows < POC_THRESHOLD else (50, 200, 1000)
-    )
+    try:
+        pairs = load_pairs(spark)
+        total_rows = pairs.count()
+        unique_cases = pairs.select("primaryid").distinct().count()
+        log.info("Rows: %d | Cases: %d", total_rows, unique_cases)
 
-    prr_df  = compute_prr(pairs)
-    signals = apply_threshold_filters(prr_df, min_a, min_c, min_drug)
-    log.info("After threshold + junk filters: %d", len(signals))
+        # Production thresholds (hardcoded for full FAERS dataset)
+        min_a, min_c, min_drug = (50, 200, 1000)
 
-    signals = apply_spike_filter(signals, pairs)
-    signals = apply_surge_filter(signals, pairs)
+        prr_df = compute_prr(pairs)
+        signals = apply_threshold_filters(prr_df, min_a, min_c, min_drug)
+        signals_count = signals.count()
+        log.info("After threshold + junk filters: %d", signals_count)
 
-    # Debug: show all gabapentin signals so we can see what pt terms exist
-    gaba = signals[signals["drug_key"].str.contains("gabapentin", case=False)]
-    if gaba.empty:
-        log.warning("DEBUG: no gabapentin signals at all after filters")
-    else:
-        log.info("DEBUG: gabapentin signals found (%d total):", len(gaba))
-        for _, r in gaba.iterrows():
-            log.info("  pt=%-50s  PRR=%.2f  A=%d", r["pt"], r["PRR"], r["A"])
+        signals = apply_spike_filter(signals, pairs)
+        signals = apply_surge_filter(signals, pairs)
 
-    passed = run_checkpoint(signals)
-    if not passed:
-        quarters = pairs["source_quarter"].nunique()
-        log.warning(
-            "Checkpoint not passed on %d quarter(s) of data. "
-            "Expected with single-quarter POC — gabapentin needs full 4-quarter "
-            "data to exceed A >= 30 for cardio-respiratory arrest. "
-            "Writing signals anyway so downstream pipeline can proceed.",
-            quarters,
-        )
+        # Debug: show all gabapentin signals so we can see what pt terms exist
+        gaba = signals.filter(F.lower(F.col("drug_key")).contains("gabapentin"))
+        gaba_count = gaba.count()
 
-    write_signals(signals)
-    from app.utils.redis_client import invalidate_signals
-    invalidate_signals()
-    log.info("Redis signal cache cleared after Branch 2 run")
+        if gaba_count == 0:
+            log.warning("DEBUG: no gabapentin signals at all after filters")
+        else:
+            log.info("DEBUG: gabapentin signals found (%d total):", gaba_count)
+            for row in gaba.select("pt", "PRR", "A").collect():
+                log.info("  pt=%-50s  PRR=%.2f  A=%d", row["pt"], row["PRR"], row["A"])
+
+        passed = run_checkpoint(signals)
+        if not passed:
+            num_quarters = pairs.select("source_quarter").distinct().count()
+            log.warning(
+                "Checkpoint not passed on %d quarter(s) of data. "
+                "Expected with single-quarter POC — gabapentin needs full 4-quarter "
+                "data to exceed A >= 30 for cardio-respiratory arrest. "
+                "Writing signals anyway so downstream pipeline can proceed.",
+                num_quarters,
+            )
+
+        write_signals(signals, spark)
+
+        # Invalidate Redis cache after successful write
+        from app.utils.redis_client import invalidate_signals
+        invalidate_signals()
+        log.info("Redis signal cache cleared after Branch 2 run")
+
+    finally:
+        spark.stop()
