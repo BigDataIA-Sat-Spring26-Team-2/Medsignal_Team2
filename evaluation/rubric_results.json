@@ -1,0 +1,121 @@
+{
+  "pass_rate": 0.9,
+  "passes": 9,
+  "total": 10,
+  "target_met": true,
+  "target": 0.7,
+  "results": [
+    {
+      "drug_key": "dupilumab",
+      "pt": "conjunctivitis",
+      "priority": "P1",
+      "overall_pass": true,
+      "signal_identification": true,
+      "literature_grounding": true,
+      "citation_accuracy": true,
+      "tier_consistency": true,
+      "failure_reasons": {}
+    },
+    {
+      "drug_key": "pregabalin",
+      "pt": "coma",
+      "priority": "P1",
+      "overall_pass": true,
+      "signal_identification": true,
+      "literature_grounding": true,
+      "citation_accuracy": true,
+      "tier_consistency": true,
+      "failure_reasons": {}
+    },
+    {
+      "drug_key": "gabapentin",
+      "pt": "cardio-respiratory arrest",
+      "priority": "P1",
+      "overall_pass": true,
+      "signal_identification": true,
+      "literature_grounding": true,
+      "citation_accuracy": true,
+      "tier_consistency": true,
+      "failure_reasons": {}
+    },
+    {
+      "drug_key": "levetiracetam",
+      "pt": "seizure",
+      "priority": "P1",
+      "overall_pass": true,
+      "signal_identification": true,
+      "literature_grounding": true,
+      "citation_accuracy": true,
+      "tier_consistency": true,
+      "failure_reasons": {}
+    },
+    {
+      "drug_key": "tirzepatide",
+      "pt": "injection site pain",
+      "priority": "P1",
+      "overall_pass": true,
+      "signal_identification": true,
+      "literature_grounding": true,
+      "citation_accuracy": true,
+      "tier_consistency": true,
+      "failure_reasons": {}
+    },
+    {
+      "drug_key": "metformin",
+      "pt": "lactic acidosis",
+      "priority": "P1",
+      "overall_pass": true,
+      "signal_identification": true,
+      "literature_grounding": true,
+      "citation_accuracy": true,
+      "tier_consistency": true,
+      "failure_reasons": {}
+    },
+    {
+      "drug_key": "bupropion",
+      "pt": "seizure",
+      "priority": "P1",
+      "overall_pass": true,
+      "signal_identification": true,
+      "literature_grounding": true,
+      "citation_accuracy": true,
+      "tier_consistency": true,
+      "failure_reasons": {}
+    },
+    {
+      "drug_key": "semaglutide",
+      "pt": "increased appetite",
+      "priority": "P1",
+      "overall_pass": true,
+      "signal_identification": true,
+      "literature_grounding": true,
+      "citation_accuracy": true,
+      "tier_consistency": true,
+      "failure_reasons": {}
+    },
+    {
+      "drug_key": "empagliflozin",
+      "pt": "diabetic ketoacidosis",
+      "priority": "P1",
+      "overall_pass": true,
+      "signal_identification": true,
+      "literature_grounding": true,
+      "citation_accuracy": true,
+      "tier_consistency": true,
+      "failure_reasons": {}
+    },
+    {
+      "drug_key": "dapagliflozin",
+      "pt": "glomerular filtration rate decreased",
+      "priority": "P1",
+      "overall_pass": false,
+      "signal_identification": false,
+      "literature_grounding": true,
+      "citation_accuracy": true,
+      "tier_consistency": true,
+      "failure_reasons": {
+        "signal_identification": "missing: reaction 'glomerular filtration rate decreased'"
+      }
+    }
+  ]
+}
