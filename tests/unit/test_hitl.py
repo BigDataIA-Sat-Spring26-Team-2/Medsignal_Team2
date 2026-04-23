@@ -52,7 +52,7 @@ def test_health_is_fast(client):
 @pytest.mark.unit
 def test_post_decision_rejects_invalid_decision(client):
     """
-    POST /hitl/decisions must reject decisions outside APPROVE/REJECT/ESCALATE.
+    POST /hitl/decisions must reject decisions outside APPROVE/REJECT.
     The Snowflake write must never happen for invalid input.
     """
     response = client.post(
@@ -144,10 +144,10 @@ def test_post_decision_reviewer_note_is_optional(client):
 
 @pytest.mark.unit
 def test_hitl_decision_model_all_valid_decisions():
-    """All three valid decision values must be accepted by the Pydantic model."""
+    """Both valid decision values (APPROVE, REJECT) must be accepted by the Pydantic model."""
     from app.routers.hitl import HITLDecision
 
-    for decision_value in ["APPROVE", "REJECT", "ESCALATE"]:
+    for decision_value in ["APPROVE", "REJECT"]:
         d = HITLDecision(
             drug_key="dupilumab",
             pt      ="conjunctivitis",
@@ -247,6 +247,37 @@ def test_get_queue_returns_correct_shape(client):
     assert row["pt"]         == "seizure"
     assert row["priority"]   == "P1"
     assert row["stat_score"] == 0.78
+
+
+@pytest.mark.unit
+def test_hitl_cache_invalidated_after_approve_decision(client):
+    """
+    POST /hitl/decisions with APPROVE must call invalidate_signals exactly once.
+    Validates cache invalidation: after a HITL decision the signal list cache
+    must be cleared so the next GET /signals reflects the new hitl_decision value.
+    """
+    with patch("app.routers.hitl.get_conn") as mock_conn, \
+         patch("app.routers.hitl._get_pending_count", return_value=4), \
+         patch("app.routers.hitl.set_queue_depth"), \
+         patch("app.routers.hitl.invalidate_signals") as mock_invalidate:
+
+        mock_cur = MagicMock()
+        mock_conn.return_value.cursor.return_value = mock_cur
+        mock_conn.return_value.commit = MagicMock()
+        mock_conn.return_value.close = MagicMock()
+        mock_cur.close = MagicMock()
+
+        response = client.post(
+            "/hitl/decisions",
+            json={
+                "drug_key": "bupropion",
+                "pt"      : "seizure",
+                "decision": "APPROVE",
+            },
+        )
+
+    assert response.status_code == 200
+    mock_invalidate.assert_called_once()
 
 
 @pytest.mark.unit

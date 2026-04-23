@@ -138,6 +138,7 @@ def test_pydantic_accepts_valid_brief():
         brief_text="Bupropion has been associated with seizure...",
         key_findings=["PRR of 4.2 is significant", "3 deaths reported"],
         pmids_cited=["12345678", "87654321"],
+        search_queries=["bupropion seizure mechanism pharmacology adverse reaction"],
         recommended_action="LABEL_UPDATE",
         drug_key="bupropion",
         pt="seizure",
@@ -160,6 +161,7 @@ def test_citation_guard_removes_fabricated_pmids():
         brief_text="text citing [PMID:99999999]",
         key_findings=["finding"],
         pmids_cited=["12345678", "99999999"],  # 99999999 was not retrieved
+        search_queries=["bupropion seizure mechanism pharmacology adverse reaction"],
         recommended_action="MONITOR",
         drug_key="bupropion",
         pt="seizure",
@@ -186,6 +188,7 @@ def test_citation_guard_allows_all_when_all_valid():
         brief_text="text",
         key_findings=["finding"],
         pmids_cited=["12345678", "87654321"],
+        search_queries=["bupropion seizure mechanism pharmacology adverse reaction"],
         recommended_action="MONITOR",
         drug_key="bupropion",
         pt="seizure",
@@ -210,6 +213,7 @@ def test_citation_guard_empty_retrieved():
         brief_text="text",
         key_findings=["finding"],
         pmids_cited=["12345678"],
+        search_queries=["bupropion seizure mechanism pharmacology adverse reaction"],
         recommended_action="MONITOR",
         drug_key="bupropion",
         pt="seizure",
@@ -280,6 +284,7 @@ def test_agent3_node_returns_required_state_keys():
         "brief_text"        : "Bupropion has been associated with seizure [PMID:12345678].",
         "key_findings"      : ["PRR=4.2", "3 deaths", "Literature supports CNS mechanism"],
         "pmids_cited"       : ["12345678"],
+        "search_queries"    : ["bupropion seizure mechanism pharmacology adverse reaction"],
         "recommended_action": "LABEL_UPDATE",
         "drug_key"          : "bupropion",
         "pt"                : "seizure",
@@ -289,8 +294,12 @@ def test_agent3_node_returns_required_state_keys():
         "generated_at"      : "2026-04-15T00:00:00+00:00",
     }
 
-    with patch("app.agents.agent3_assessor._call_gpt4o") as mock_gpt, \
-         patch("app.agents.agent3_assessor._write_to_snowflake") as mock_write:
+    with patch("app.agents.agent3_assessor._call_llm") as mock_gpt, \
+         patch("app.agents.agent3_assessor._write_to_snowflake") as mock_write, \
+         patch("app.agents.agent3_assessor.invalidate_brief"), \
+         patch("evaluation.hallucination_check.validate_brief", return_value={
+             "hallucination_score": 0.0, "pass": True, "checks": {}, "flags": [],
+         }):
 
         mock_gpt.return_value = (mock_gpt_response, 500, 200)
 
@@ -313,6 +322,50 @@ def test_normalize_action_maps_prose_variants():
     assert _normalize_action({"recommended_action": "Escalate for review"})["recommended_action"] == "MONITOR"
     assert _normalize_action({"recommended_action": "Withdraw from market"})["recommended_action"] == "WITHDRAW"
     assert _normalize_action({"recommended_action": "restrict prescribing"})["recommended_action"] == "RESTRICT"
+
+
+@pytest.mark.unit
+def test_agent3_llm_router_total_failure():
+    """
+    When LLMRouter.complete() raises RuntimeError on every call, agent3_node
+    must set error in the returned dict and write generation_error=True to
+    Snowflake. Validates that the LLMRouter wiring handles total LLM failure
+    without crashing the pipeline.
+    """
+    from app.agents.agent3_assessor import agent3_node
+
+    mock_router = MagicMock()
+    mock_router.complete.side_effect = RuntimeError("all models failed")
+
+    mock_state = {
+        "drug_key"      : "bupropion",
+        "pt"            : "seizure",
+        "prr"           : 4.2,
+        "case_count"    : 89,
+        "death_count"   : 0,
+        "hosp_count"    : 0,
+        "lt_count"      : 0,
+        "stat_score"    : 0.78,
+        "lit_score"     : 0.65,
+        "abstracts"     : [],
+        "search_queries": [],
+        "priority"      : None,
+        "brief"         : None,
+        "error"         : None,
+        "router"        : mock_router,
+    }
+
+    with patch("app.agents.agent3_assessor._write_to_snowflake") as mock_write, \
+         patch("app.agents.agent3_assessor.invalidate_brief"):
+
+        result = agent3_node(mock_state)
+
+    assert result["error"] is not None, "error must be set when LLM totally fails"
+    assert result["brief"] is None
+
+    call_kwargs = mock_write.call_args
+    assert call_kwargs.kwargs.get("gen_error") is True or \
+           call_kwargs.args[5] is True  # gen_error is 6th positional arg
 
 
 @pytest.mark.unit
@@ -341,8 +394,9 @@ def test_agent3_node_sets_gen_error_on_double_failure():
         "error"      : None,
     }
 
-    with patch("app.agents.agent3_assessor._call_gpt4o") as mock_gpt, \
-         patch("app.agents.agent3_assessor._write_to_snowflake") as mock_write:
+    with patch("app.agents.agent3_assessor._call_llm") as mock_gpt, \
+         patch("app.agents.agent3_assessor._write_to_snowflake") as mock_write, \
+         patch("app.agents.agent3_assessor.invalidate_brief"):
 
         mock_gpt.side_effect = ValueError("not valid JSON")
 
@@ -354,3 +408,12 @@ def test_agent3_node_sets_gen_error_on_double_failure():
     call_kwargs = mock_write.call_args
     assert call_kwargs.kwargs.get("gen_error") is True or \
            call_kwargs.args[5] is True  # positional: gen_error is 6th arg
+
+
+@pytest.mark.unit
+def test_normalize_action_empty_string_defaults_to_monitor():
+    """Empty recommended_action string must default to MONITOR, not raise."""
+    from app.agents.agent3_assessor import _normalize_action
+
+    result = _normalize_action({"recommended_action": ""})
+    assert result["recommended_action"] == "MONITOR"

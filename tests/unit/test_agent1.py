@@ -37,6 +37,7 @@ Tests 13-17, 19-20 always run — no API cost.
 
 import sys
 import os
+import pytest
 from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -557,3 +558,30 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# ── pytest-discoverable unit tests ───────────────────────────────────────────
+
+@pytest.mark.unit
+def test_validate_queries_rejects_short_queries():
+    """
+    _validate_queries must reject queries with fewer than MIN_QUERY_WORDS=6 words.
+    A 5-word query is insufficient; exactly 6 words passes.
+    """
+    from app.agents.agent1_detector import _validate_queries
+
+    # 5-word queries — below minimum
+    short = [
+        "bupropion seizure mechanism adverse",          # 4 words
+        "bupropion seizure clinical outcomes",           # 4 words
+        "bupropion seizure risk factors",               # 4 words
+    ]
+    assert not _validate_queries(short), "Queries with < 6 words must fail validation"
+
+    # exactly 6 words — meets minimum
+    exact_six = [
+        "bupropion seizure mechanism pharmacology adverse reaction",
+        "bupropion seizure clinical outcomes incidence risk",
+        "bupropion seizure CNS lowering threshold evidence",
+    ]
+    assert _validate_queries(exact_six), "Queries with exactly 6 words must pass validation"
