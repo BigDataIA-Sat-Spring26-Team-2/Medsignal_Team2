@@ -70,13 +70,13 @@ GOLDEN_SIGNALS = [
     },
     {
         "drug_key"      : "gabapentin",
-        "pt"            : "cardio-respiratory arrest",        # Q1 available PT — cardio-respiratory arrest appears in full year data
+        "pt"            : "cardio-respiratory arrest",       
         "fda_comm_date" : date(2023, 12, 1),
         "fda_comm_label": "FDA Drug Safety Communication — December 2023",
     },
     {
         "drug_key"      : "pregabalin",
-        "pt"            : "coma",               # Q1 available PT — coma appears in full year data
+        "pt"            : "coma",               
         "fda_comm_date" : date(2023, 12, 1),
         "fda_comm_label": "FDA Drug Safety Communication — December 2023",
     },
@@ -106,13 +106,13 @@ GOLDEN_SIGNALS = [
     },
     {
         "drug_key"      : "bupropion",
-        "pt"            : "seizure",        # Q1 available PT — seizure appears in full year data
-        "fda_comm_date" : date(2023, 5, 1),
-        "fda_comm_label": "FDA Drug Safety Communication — May 2023",
+        "pt"            : "seizure",        
+        "fda_comm_date" : None,
+        "fda_comm_label": "FDA Not Detected",
     },
     {
         "drug_key"      : "dapagliflozin",
-        "pt"            : "glomerular filtration rate decreased",                    # Q1 available PT — glomerular filtration rate decreased appears in full year data
+        "pt"            : "glomerular filtration rate decreased",                   
         "fda_comm_date" : date(2023, 5, 1),
         "fda_comm_label": "FDA Label Update — May 2023",
     },
@@ -225,13 +225,13 @@ def get_lead_times():
         fda_comm_date = g["fda_comm_date"]
 
         lead_time_days = None
-        if first_date is not None:
+        if first_date is not None and fda_comm_date is not None:
             lead_time_days = (fda_comm_date - first_date).days
 
         results.append({
             "drug_key"          : g["drug_key"],
             "pt"                : g["pt"],
-            "fda_comm_date"     : fda_comm_date.isoformat(),
+            "fda_comm_date"     : fda_comm_date.isoformat() if fda_comm_date else None,
             "fda_comm_label"    : g["fda_comm_label"],
             "first_flagged_date": first_date.isoformat() if first_date else None,
             "lead_time_days"    : lead_time_days,
@@ -389,7 +389,7 @@ def get_summary():
     for g in GOLDEN_SIGNALS:
         key        = (g["drug_key"], g["pt"])
         first_date = first_flagged.get(key)
-        if first_date is not None:
+        if first_date is not None and g["fda_comm_date"] is not None:
             lead_times.append((g["fda_comm_date"] - first_date).days)
 
     median_lead_time    = sorted(lead_times)[len(lead_times) // 2] if lead_times else None

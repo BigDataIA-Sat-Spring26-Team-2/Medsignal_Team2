@@ -52,17 +52,19 @@ class TestGoldenSignalConstants:
 
     def test_fda_comm_dates_are_date_objects(self):
         for g in GOLDEN_SIGNALS:
-            assert isinstance(g["fda_comm_date"], date), (
-                f"{g['drug_key']}: fda_comm_date must be date, "
-                f"got {type(g['fda_comm_date'])}"
+            assert g["fda_comm_date"] is None or isinstance(g["fda_comm_date"], date), (
+            f"{g['drug_key']}: fda_comm_date must be date or None, "
+            f"got {type(g['fda_comm_date'])}"
             )
 
     def test_fda_comm_dates_in_2023_or_2024(self):
         for g in GOLDEN_SIGNALS:
+            if g["fda_comm_date"] is None:
+                continue
             year = g["fda_comm_date"].year
             assert year in (2023, 2024), (
                 f"{g['drug_key']}: fda_comm_date year {year} unexpected"
-            )
+        )
 
     def test_no_duplicate_drug_pt_pairs(self):
         pairs = [(g["drug_key"], g["pt"]) for g in GOLDEN_SIGNALS]
@@ -102,16 +104,20 @@ class TestGoldenSignalConstants:
             dapagliflozin → glomerular filtration rate decreased
         """
         pt_map = {g["drug_key"]: g["pt"] for g in GOLDEN_SIGNALS}
+        for drug_key, pt in pt_map.items():
+            assert isinstance(pt, str) and pt == pt.lower(), (
+                f"{drug_key}: pt '{pt}' must be a lowercase string"
+        )
 
         assert pt_map["dupilumab"]     == "conjunctivitis"
-        assert pt_map["gabapentin"]    == "completed suicide"    # proposal: cardio-respiratory arrest
-        assert pt_map["pregabalin"]    == "drug abuse"           # proposal: coma
+        assert pt_map["gabapentin"]    == "cardio-respiratory arrest"    
+        assert pt_map["pregabalin"]    == "coma"           
         assert pt_map["levetiracetam"] == "seizure"
         assert pt_map["tirzepatide"]   == "injection site pain"
         assert pt_map["semaglutide"]   == "increased appetite"
         assert pt_map["empagliflozin"] == "diabetic ketoacidosis"
-        assert pt_map["bupropion"]     == "completed suicide"    # proposal: seizure
-        assert pt_map["dapagliflozin"] == "death"                # proposal: glomerular filtration rate decreased
+        assert pt_map["bupropion"]     == "seizure"   
+        assert pt_map["dapagliflozin"] == "glomerular filtration rate decreased"               
         assert pt_map["metformin"]     == "lactic acidosis"
 
 
