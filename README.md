@@ -50,9 +50,9 @@
 
 ## What is MedSignal?
 
-When a drug is approved, safety testing doesn't stop — it moves to the real world. The FDA Adverse Event Reporting System (FAERS) receives over 2 million reports per year from patients, doctors, and manufacturers. But detecting meaningful signals from this data is slow and manual: analysts join 7 files per quarter, compute statistics by hand, search PubMed for literature, and write safety narratives from scratch. By the time the FDA formally communicates a signal, it has often been visible in the data for months.
+When a drug is approved, safety testing doesn't stop it moves to the real world. The FDA Adverse Event Reporting System (FAERS) receives over 2 million reports per year from patients, doctors, and manufacturers. But detecting meaningful signals from this data is slow and manual: analysts join 7 files per quarter, compute statistics by hand, search PubMed for literature, and write safety narratives from scratch. By the time the FDA formally communicates a signal, it has often been visible in the data for months.
 
-MedSignal automates this entire pipeline — from raw FAERS ASCII files to a prioritized, literature-grounded safety brief ready for human review — across five layers:
+MedSignal automates this entire pipelinefrom raw FAERS ASCII files to a prioritized, literature-grounded safety brief ready for human review across five layers:
 
 ```
 FAERS ZIPs → Kafka → Spark (PRR) → LangGraph Agents → Streamlit HITL
@@ -78,7 +78,7 @@ FAERS ZIPs → Kafka → Spark (PRR) → LangGraph Agents → Streamlit HITL
 
 ![Architecture Diagram](MedsignalSystemArchitechture.png)
 
-The architecture diagram shows the full system across five layers. Snowflake holds all relational data (`drug_reaction_pairs`, `signals_flagged`, `safety_briefs`, `hitl_decisions`). ChromaDB runs as a Docker container (port 8002) storing 1,800+ PubMed embeddings. GPT-4o is called only in Agent 1 (query generation) and Agent 3 (SafetyBrief synthesis) — Agent 2 is fully deterministic.
+The architecture diagram shows the full system across five layers. Snowflake holds all relational data (`drug_reaction_pairs`, `signals_flagged`, `safety_briefs`, `hitl_decisions`). ChromaDB runs as a Docker container (port 8002) storing 1,800+ PubMed embeddings. GPT-4o is called only in Agent 1 (query generation) and Agent 3 (SafetyBrief synthesis) Agent 2 is fully deterministic.
 
 ---
 
