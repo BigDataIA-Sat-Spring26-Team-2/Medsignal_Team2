@@ -6,9 +6,9 @@
 **Team:** Samiksha (Data Engineering Lead) · Prachi (Data Processing & LLM Lead) · Siddharth (Infrastructure & Quality Lead)
 
 
--Dashboard available at: http://44.208.5.68:8501
--Video Presentation: [Link](https://teams.microsoft.com/l/meetingrecap?driveId=b%218JzbXwgBnUSdAqSH29IUc_nkJ16sTrxFouB6QtyLUBzmQJqceZoeQrq-QzCRfP3w&driveItemId=01MVJ2O7QQQCR6ASW2SVCINOAZJA4RIB2S&sitePath=https%3A%2F%2Fnortheastern-my.sharepoint.com%2Fpersonal%2Fpradhan_prac_northeastern_edu%2FDocuments%2FRecordings%2FMeeting+in+Big+Data-20260424_134917-Meeting+Recording.mp4&fileUrl=https%3A%2F%2Fnortheastern-my.sharepoint.com%2Fpersonal%2Fpradhan_prac_northeastern_edu%2FDocuments%2FRecordings%2FMeeting+in+Big+Data-20260424_134917-Meeting+Recording.mp4&threadId=19%3Aabf4611dd15740b791eb005451a26c03%40thread.v2&organizerId=73bad307-9383-411b-aa1c-dc5d9b96cf0e&tenantId=a8eec281-aaa3-4dae-ac9b-9a398b9215e7&callId=d382618d-e35c-4831-8c7b-664f879b813a&threadType=GroupChat&meetingType=Unknown&subType=RecapSharingLink_RecapCore)
--Codelab:[Link](https://codelabs-preview.appspot.com/?file_id=11ECyMe8ZCYnVfF3022BSFNFvDJ8mFHqsue7Y_zau5RQ#0)
+- Dashboard available at: http://44.208.5.68:8501
+- Video Presentation: [Link](https://teams.microsoft.com/l/meetingrecap?driveId=b%218JzbXwgBnUSdAqSH29IUc_nkJ16sTrxFouB6QtyLUBzmQJqceZoeQrq-QzCRfP3w&driveItemId=01MVJ2O7QQQCR6ASW2SVCINOAZJA4RIB2S&sitePath=https%3A%2F%2Fnortheastern-my.sharepoint.com%2Fpersonal%2Fpradhan_prac_northeastern_edu%2FDocuments%2FRecordings%2FMeeting+in+Big+Data-20260424_134917-Meeting+Recording.mp4&fileUrl=https%3A%2F%2Fnortheastern-my.sharepoint.com%2Fpersonal%2Fpradhan_prac_northeastern_edu%2FDocuments%2FRecordings%2FMeeting+in+Big+Data-20260424_134917-Meeting+Recording.mp4&threadId=19%3Aabf4611dd15740b791eb005451a26c03%40thread.v2&organizerId=73bad307-9383-411b-aa1c-dc5d9b96cf0e&tenantId=a8eec281-aaa3-4dae-ac9b-9a398b9215e7&callId=d382618d-e35c-4831-8c7b-664f879b813a&threadType=GroupChat&meetingType=Unknown&subType=RecapSharingLink_RecapCore)
+- Codelab:[Link](https://codelabs-preview.appspot.com/?file_id=11ECyMe8ZCYnVfF3022BSFNFvDJ8mFHqsue7Y_zau5RQ#0)
 
 
 **Additional monitoring URLs:**
