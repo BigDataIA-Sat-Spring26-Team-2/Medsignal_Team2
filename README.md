@@ -414,6 +414,7 @@ Streamlit HITL Queue
     └── Analyst: Approve / Reject / Escalate + optional note → hitl_decisions → Snowflake
                  INSERT only — decisions are immutable, never updated
 ```
+[Data Flow Diagram](DFDM.png)
 
 ---
 
