@@ -85,60 +85,8 @@ FAERS ZIPs → Kafka → Spark (PRR) → LangGraph Agents → Streamlit HITL
 ---
 
 ## Repository Structure
-
 ```
-medsignal/
-├── app/
-│   ├── agents/
-│   │   ├── agent1_detector.py      # StatScore + GPT-4o query generation
-│   │   ├── agent2_retriever.py     # ChromaDB HNSW + BM25 + RRF + LitScore
-│   │   ├── agent3_assessor.py      # Priority tier + SafetyBrief generation
-│   │   ├── pipeline.py             # LangGraph pipeline orchestration
-│   │   └── state.py                # SignalState TypedDict
-│   ├── core/
-│   │   └── llm_router.py           # GPT-4o → Claude Haiku fallback chain
-│   ├── routers/
-│   │   ├── signals.py              # GET /signals, GET /signals/count
-│   │   ├── hitl.py                 # HITL queue and decision endpoints
-│   │   ├── evaluation.py           # Lead time and precision endpoints
-│   │   └── health.py               # Snowflake health check
-│   ├── scripts/
-│   │   ├── download_faers.py       # Download FAERS ZIPs from FDA portal
-│   │   └── load_pubmed.py          # Fetch PubMed abstracts → ChromaDB
-│   ├── services/
-│   │   └── signal_service.py       # Business logic + Redis caching
-│   └── utils/
-│       ├── chromadb_client.py      # Shared ChromaDB client factory
-│       ├── redis_client.py         # Redis cache helpers
-│       └── snowflake_client.py     # Shared Snowflake connection factory
-├── pipelines/
-│   ├── spark_branch1.py            # Kafka → drug_reaction_pairs (~5M rows)
-│   └── branch2_prr.py              # PRR computation → signals_flagged (~7K)
-├── scripts/
-│   └── faers_prep.py               # Thin Kafka producer for FAERS ASCII files
-├── streamlit_app/
-│   ├── app.py                      # Entry point
-│   └── pages/
-│       ├── 1_signal_feed.py        # All signals ranked by priority
-│       ├── 2_signal_detail.py      # SafetyBrief + PMIDs + scores
-│       ├── 3_hitl_queue.py         # Human review queue
-│       ├── 4_evaluation.py         # Detection lead time + precision
-│       ├── 5_metrics.py            # Prometheus observability
-│       └── 6_evidence_explorer.py  # PubMed literature browser
-├── evaluation/
-│   ├── hallucination_check.py      # PMID fabrication detection
-│   └── rubric_scorer.py            # SafetyBrief quality rubric (4 criteria)
-├── tests/
-│   ├── unit/                       # Pure logic tests, no external deps
-│   ├── integration/                # Requires real Snowflake + ChromaDB
-│   └── hypothesis/                 # Property-based tests
-├── docker/
-│   ├── docker-compose.yml          # Kafka + Zookeeper + Redis + ChromaDB
-│   └── kafka_topics.sh             # Create 4 Kafka topics
-├── data/
-│   ├── schema.sql                  # PostgreSQL schema (reference)
-│   └── snowflake_schema.sql        # Snowflake schema
-└── main.py                         # FastAPI application entry point
+![Repo Structure](project_structure.png)
 ```
 
 ---
