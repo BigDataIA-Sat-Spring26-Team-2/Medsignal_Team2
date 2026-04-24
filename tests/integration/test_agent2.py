@@ -20,7 +20,7 @@ def test_chromadb_loaded():
     print(f"\nChromaDB abstracts: {count}")
     assert count >= 1800, (
         f"ChromaDB has only {count} abstracts. "
-        f"Siddharth needs to run load_pubmed.py first."
+        f" run load_pubmed.py first."
     )
 
 
