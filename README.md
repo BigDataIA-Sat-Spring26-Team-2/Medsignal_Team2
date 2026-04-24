@@ -57,7 +57,7 @@ FAERS ZIPs → Kafka → Spark (PRR) → LangGraph Agents → Streamlit HITL
 ## Architecture
 
 ```
-![Architecture Diagram](Medsignal-System architechture.png)
+![Architecture Diagram](Medsignal_System_architechture.png)
 ```
 
 ---
