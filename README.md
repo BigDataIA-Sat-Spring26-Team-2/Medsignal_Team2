@@ -57,38 +57,7 @@ FAERS ZIPs → Kafka → Spark (PRR) → LangGraph Agents → Streamlit HITL
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  LAYER 1 — DATA PREPARATION (one-time setup)                    │
-│  faers_prep.py → Kafka topics                                   │
-│  rxnorm_cache_builder → Snowflake rxnorm_cache                  │
-│  load_pubmed.py → ChromaDB (1,800+ abstracts)                   │
-└────────────────────────┬────────────────────────────────────────┘
-                         │
-┌────────────────────────▼────────────────────────────────────────┐
-│  LAYER 2 — KAFKA INGESTION                                      │
-│  4 topics: faers_demo · faers_drug · faers_reac · faers_outc    │
-└────────────────────────┬────────────────────────────────────────┘
-                         │
-┌────────────────────────▼────────────────────────────────────────┐
-│  LAYER 3 — SPARK PROCESSING (batch)                             │
-│  Branch 1: dedup → PS filter → RxNorm → join → drug_reaction_pairs (~5M rows) │
-│  Branch 2: PRR computation → quality filters → signals_flagged (~7K signals)  │
-└────────────────────────┬────────────────────────────────────────┘
-                         │ PRR validation checkpoint
-┌────────────────────────▼────────────────────────────────────────┐
-│  LAYER 4 — AGENT PIPELINE                             │
-│  Agent 1 (Signal Detector) → StatScore + GPT-4o search queries  │
-│  Agent 2 (Literature Retriever) → ChromaDB HNSW + BM25 + RRF   │
-│  Agent 3 (Assessor) → P1-P4 priority + GPT-4o SafetyBrief      │
-└────────────────────────┬────────────────────────────────────────┘
-                         │
-┌────────────────────────▼────────────────────────────────────────┐
-│  LAYER 5 — STREAMLIT INTERFACE                                  │
-│  Signal Feed · Signal Detail · HITL Queue · Evaluation          │
-│  Evidence Explorer · Metrics                                    │
-└─────────────────────────────────────────────────────────────────┘
-
-Storage: Snowflake (relational) · ChromaDB (vectors) · Redis (cache)
+![Architecture Diagram](Medsignal-System architechture.png)
 ```
 
 ---
