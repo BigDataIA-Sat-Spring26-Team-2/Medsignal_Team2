@@ -45,12 +45,11 @@ FAERS ZIPs → Kafka → Spark (PRR) → LangGraph Agents → Streamlit HITL
 | Metric | Value |
 |--------|-------|
 | Golden signals detected | 10 / 10 validated (100% precision) |
-| Median detection lead time | 232 days before FDA communication |
+| Median detection lead time | ~230 days before FDA communication |
 | Total signals flagged | 7,830 across 2023 FAERS data |
 | Input data processed | 5,755,720 drug-reaction pair rows |
-| ChromaDB abstracts | 1,800+ PubMed abstracts across 10 golden drugs |
-| Agent latency | < 120 seconds per signal |
-| PRR validation | Gabapentin × cardio-respiratory arrest: confirmed |
+| ChromaDB abstracts | 1,800+ PubMed abstracts across 10 golden drugs(on demand retrieval provision given to load more abstracts)|
+| Agent latency | < 100 seconds per signal |
 
 ---
 
@@ -69,7 +68,7 @@ FAERS ZIPs → Kafka → Spark (PRR) → LangGraph Agents → Streamlit HITL
 | Ingestion | Apache Kafka 7.5.0 (Confluent) |
 | Processing | Apache Spark 3.5.x (PySpark) |
 | Relational storage | Snowflake |
-| Vector store | ChromaDB (local PersistentClient) |
+| Vector store | ChromaDB (HTTPClient) |
 | Embeddings | `all-MiniLM-L6-v2` (HuggingFace, 384-dim) |
 | Agent framework | LangGraph |
 | LLM | GPT-4o / GPT-4o mini (OpenAI) |
